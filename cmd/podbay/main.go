@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -37,6 +38,7 @@ func run(args []string) error {
 	authFile := fs.String("auth", os.Getenv("PODBAY_AUTH_FILE"), "auth config JSON file (defaults to <data>/auth.json)")
 	publicURL := fs.String("public-url", os.Getenv("PODBAY_PUBLIC_URL"), "public base URL for generated site URLs")
 	cookieDomain := fs.String("cookie-domain", os.Getenv("PODBAY_COOKIE_DOMAIN"), "session cookie domain, e.g. .podbay.dev")
+	staticCache := fs.Int("static-cache", envInt("PODBAY_STATIC_CACHE_SECONDS", 60), "seconds a CDN/browser may cache pod static assets before revalidating (HTML always revalidates)")
 	githubClientID := fs.String("github-client-id", os.Getenv("PODBAY_GITHUB_CLIENT_ID"), "GitHub OAuth client id")
 	githubClientSecret := fs.String("github-client-secret", os.Getenv("PODBAY_GITHUB_CLIENT_SECRET"), "GitHub OAuth client secret")
 	githubRedirectURL := fs.String("github-redirect-url", os.Getenv("PODBAY_GITHUB_REDIRECT_URL"), "GitHub OAuth callback URL")
@@ -66,6 +68,7 @@ func run(args []string) error {
 		AuthFile:           *authFile,
 		PublicURL:          *publicURL,
 		CookieDomain:       *cookieDomain,
+		StaticCacheSeconds: *staticCache,
 		GitHubClientID:     *githubClientID,
 		GitHubClientSecret: *githubClientSecret,
 		GitHubRedirectURL:  *githubRedirectURL,
@@ -114,6 +117,15 @@ func run(args []string) error {
 func envDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func envInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return fallback
 }

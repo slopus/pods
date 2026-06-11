@@ -532,6 +532,16 @@ func (s *Server) serveStaticRoot(w http.ResponseWriter, r *http.Request, root, r
 		return
 	}
 	defer f.Close()
+	// Cache headers so a redeploy is not masked for hours by a CDN edge: HTML
+	// always revalidates; other assets get a short max-age. An ETag from the
+	// file's size+mtime makes revalidation cheap (304) and changes on redeploy.
+	switch strings.ToLower(filepath.Ext(full)) {
+	case ".html", ".htm":
+		w.Header().Set("Cache-Control", htmlCacheControl)
+	default:
+		w.Header().Set("Cache-Control", s.assetCacheControl())
+	}
+	w.Header().Set("ETag", fmt.Sprintf(`"%x-%x"`, info.Size(), info.ModTime().UnixNano()))
 	http.ServeContent(w, r, filepath.Base(full), info.ModTime(), f)
 }
 

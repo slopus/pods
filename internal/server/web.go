@@ -22,6 +22,7 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", htmlCacheControl) // lists live sites; keep it fresh
 	data := landingData{Sites: sites, RepoURL: repoURL, BaseHost: s.landingBaseHost(r)}
 	if err := s.landing.Execute(w, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -39,6 +40,7 @@ func (s *Server) landingBaseHost(r *http.Request) string {
 
 func (s *Server) handlePodsJS(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", s.assetCacheControl())
 	_, _ = w.Write(s.podsJS)
 }
 
@@ -46,6 +48,7 @@ func (s *Server) handlePodsJS(w http.ResponseWriter, _ *http.Request) {
 // `curl -fsSL https://podbay.dev/install.sh | sh`.
 func (s *Server) handleInstallSH(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+	w.Header().Set("Cache-Control", s.assetCacheControl())
 	_, _ = w.Write(s.installSH)
 }
 

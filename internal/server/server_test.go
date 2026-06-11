@@ -514,6 +514,41 @@ func TestAdminRedeployPreservesOwner(t *testing.T) {
 	}
 }
 
+func TestStaticCacheHeaders(t *testing.T) {
+	app := newTestApp(t)
+	archive := makeTarGz(t, map[string]string{
+		"index.html": "<h1>hi</h1>",
+		"app.js":     "console.log(1)",
+	})
+	req := authedRequest(http.MethodPut, "/api/sites/cc", bytes.NewReader(archive))
+	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("deploy = %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	// JS asset: short, revalidating cache so a redeploy is not masked for hours.
+	req = httptest.NewRequest(http.MethodGet, "/app.js", nil)
+	req.Host = "cc.example.test"
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if cc := rr.Header().Get("Cache-Control"); !strings.Contains(cc, "max-age=60") || !strings.Contains(cc, "must-revalidate") {
+		t.Fatalf("app.js Cache-Control = %q, want short max-age + must-revalidate", cc)
+	}
+	if rr.Header().Get("ETag") == "" {
+		t.Fatal("app.js missing ETag")
+	}
+
+	// HTML: always revalidate so the entry document is never stale.
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "cc.example.test"
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if cc := rr.Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Fatalf("index.html Cache-Control = %q, want no-cache", cc)
+	}
+}
+
 func TestDevServerServesFilesAndInMemoryStore(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<h1>dev home</h1>"), 0o644); err != nil {

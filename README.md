@@ -153,6 +153,7 @@ unknown sites get 404.
 | `--auth` | `PODBAY_AUTH_FILE` | `<data>/auth.json` | auth config JSON file |
 | `--public-url` | `PODBAY_PUBLIC_URL` | (derived from request) | base URL for site subdomains and printed URLs |
 | `--cookie-domain` | `PODBAY_COOKIE_DOMAIN` | (from auth.json) | session cookie domain, e.g. `.podbay.dev` |
+| `--static-cache` | `PODBAY_STATIC_CACHE_SECONDS` | `60` | seconds a CDN/browser may cache a pod's static assets before revalidating (HTML always revalidates) |
 | `--github-client-id` | `PODBAY_GITHUB_CLIENT_ID` | (from auth.json) | GitHub OAuth app client id |
 | `--github-client-secret` | `PODBAY_GITHUB_CLIENT_SECRET` | (from auth.json) | GitHub OAuth client secret (needed for browser login) |
 | `--github-redirect-url` | `PODBAY_GITHUB_REDIRECT_URL` | (derived from request) | fixed GitHub OAuth callback URL |
@@ -322,6 +323,13 @@ pods db posts list --where status=draft --sort -created_at --limit 10
   URLs like `hello.pods.example.com`; set `--cookie-domain .pods.example.com` so browser
   sessions work across site subdomains. Locally, `--public-url http://localhost:7777`
   makes `hello.localhost:7777` work out of the box.
+
+- **CDN caching**: podbay sends `Cache-Control` on static files so a CDN can't mask a
+  redeploy — HTML is `no-cache` (always revalidated via `Last-Modified`/`ETag`, so it is
+  never stale) and other assets get `max-age`/`s-maxage` of `--static-cache` seconds
+  (default 60). Behind Cloudflare this keeps the edge from serving an old deploy for hours;
+  a redeploy shows through within that window. Raise it for less origin traffic, lower it
+  for fresher assets. (Without these headers Cloudflare applies its own multi-hour TTL.)
 
 ## Development
 

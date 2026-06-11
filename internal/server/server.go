@@ -44,11 +44,34 @@ type Config struct {
 	GitHubClientSecret string // GitHub OAuth app client secret, required for web login
 	GitHubRedirectURL  string // optional fixed GitHub OAuth callback URL
 
+	// StaticCacheSeconds caps how long a CDN/browser may cache a pod's static
+	// assets before revalidating, so a redeploy shows through quickly. HTML
+	// always revalidates regardless. 0 uses the default (60s).
+	StaticCacheSeconds int
+
 	// Dev mode (set DevSite): single-site local server with an in-memory
 	// store, no auth, and DevRoot served live as the site's static files.
 	DevSite string // site name; when non-empty the server runs in dev mode
 	DevRoot string // local directory served live as DevSite's static files
 }
+
+const defaultStaticCacheSeconds = 60
+
+// assetCacheControl is the Cache-Control sent for non-HTML static assets: a
+// short shared-and-browser max-age so Cloudflare (and browsers) re-fetch
+// within the window instead of serving a stale deploy for hours. HTML always
+// uses noStoreRevalidate so the entry document is never stale.
+func (s *Server) assetCacheControl() string {
+	secs := s.cfg.StaticCacheSeconds
+	if secs <= 0 {
+		secs = defaultStaticCacheSeconds
+	}
+	return fmt.Sprintf("public, max-age=%d, s-maxage=%d, must-revalidate", secs, secs)
+}
+
+// htmlCacheControl tells caches to always revalidate HTML (cheap via
+// Last-Modified / 304), so a redeploy is visible immediately.
+const htmlCacheControl = "no-cache"
 
 // dev reports whether the server runs as a local single-site dev server.
 func (c Config) dev() bool { return c.DevSite != "" }
