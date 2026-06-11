@@ -1,0 +1,14 @@
+services:
+  podbay:
+    build: .
+    image: podbay
+    ports:
+      - "7777:7777"
+    volumes:
+      - podbay-data:/data
+    environment:
+      PODBAY_SECRET: ${PODBAY_SECRET:?set PODBAY_SECRET in your environment or a .env file}
+    restart: unless-stopped
+
+volumes:
+  podbay-data:
