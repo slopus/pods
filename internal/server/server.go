@@ -149,6 +149,12 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /{$}", s.handleLanding)
 	mux.HandleFunc("GET /pods.js", s.handlePodsJS)
 	mux.HandleFunc("GET /install.sh", s.handleInstallSH)
+	mux.HandleFunc("GET /favicon.ico", s.staticAsset("favicon.ico", "image/x-icon"))
+	mux.HandleFunc("GET /favicon-32.png", s.staticAsset("favicon-32.png", "image/png"))
+	mux.HandleFunc("GET /favicon-16.png", s.staticAsset("favicon-16.png", "image/png"))
+	mux.HandleFunc("GET /apple-touch-icon.png", s.staticAsset("apple-touch-icon.png", "image/png"))
+	mux.HandleFunc("GET /icon-192.png", s.staticAsset("icon-192.png", "image/png"))
+	mux.HandleFunc("GET /icon-512.png", s.staticAsset("icon-512.png", "image/png"))
 	mux.HandleFunc("GET /sites/{site}", s.handleSiteRedirect)
 	mux.HandleFunc("GET /sites/{site}/{path...}", s.handleSiteFile)
 

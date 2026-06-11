@@ -48,3 +48,14 @@ func (s *Server) handleInstallSH(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
 	_, _ = w.Write(s.installSH)
 }
+
+// staticAsset returns a handler that serves an embedded web/ file with a fixed
+// content type. The bytes are read once at route-registration time.
+func (s *Server) staticAsset(name, contentType string) http.HandlerFunc {
+	data, _ := webFS.ReadFile("web/" + name)
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		_, _ = w.Write(data)
+	}
+}

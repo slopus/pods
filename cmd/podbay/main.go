@@ -180,6 +180,22 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
+// Flush forwards to the underlying writer so Server-Sent Events (GET
+// /api/events) keep working through this logging middleware. Without it the
+// wrapper hides the http.Flusher the net/http writer implements, and the SSE
+// handler reports "streaming unsupported".
+func (r *responseRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		if r.status == 0 {
+			r.status = http.StatusOK
+		}
+		f.Flush()
+	}
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (r *responseRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 func logRequests(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
