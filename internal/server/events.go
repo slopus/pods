@@ -68,7 +68,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	team, site, ok := s.siteFromHost(r.Host)
 	tenant := ""
 	if ok {
+		if _, ok := s.requireTeamRole(w, r, team, roleReader); !ok {
+			return
+		}
 		tenant = tenantKey(team, site)
+	} else if _, ok := s.requireAdmin(w, r); !ok {
+		return
 	}
 	s.streamEvents(w, r, tenant)
 }

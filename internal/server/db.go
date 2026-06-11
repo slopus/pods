@@ -14,7 +14,7 @@ import (
 
 // GET /api/db
 func (s *Server) handleCollections(w http.ResponseWriter, r *http.Request) {
-	team, site, key, ok := s.requestSiteTenant(w, r)
+	team, site, key, ok := s.requestSiteTenant(w, r, roleReader)
 	if !ok {
 		return
 	}
@@ -25,7 +25,7 @@ func (s *Server) handleCollections(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/db/{coll}
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
-	_, _, key, ok := s.requestSiteTenant(w, r)
+	_, _, key, ok := s.requestSiteTenant(w, r, roleReader)
 	if !ok {
 		return
 	}
@@ -43,7 +43,7 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/db/{coll}
 func (s *Server) handleDocCreate(w http.ResponseWriter, r *http.Request) {
-	team, site, key, ok := s.requestSiteTenant(w, r)
+	team, site, key, ok := s.requestSiteTenant(w, r, rolePublisher)
 	if !ok {
 		return
 	}
@@ -75,7 +75,7 @@ func (s *Server) handleDocCreate(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/db/{coll}/{id}
 func (s *Server) handleDocGet(w http.ResponseWriter, r *http.Request) {
-	_, _, key, coll, id, ok := s.validDocPath(w, r)
+	_, _, key, coll, id, ok := s.validDocPath(w, r, roleReader)
 	if !ok {
 		return
 	}
@@ -89,7 +89,7 @@ func (s *Server) handleDocGet(w http.ResponseWriter, r *http.Request) {
 
 // PUT /api/db/{coll}/{id}
 func (s *Server) handleDocSet(w http.ResponseWriter, r *http.Request) {
-	team, site, key, coll, id, ok := s.validDocPath(w, r)
+	team, site, key, coll, id, ok := s.validDocPath(w, r, rolePublisher)
 	if !ok {
 		return
 	}
@@ -116,7 +116,7 @@ func (s *Server) handleDocSet(w http.ResponseWriter, r *http.Request) {
 
 // PATCH /api/db/{coll}/{id}
 func (s *Server) handleDocPatch(w http.ResponseWriter, r *http.Request) {
-	team, site, key, coll, id, ok := s.validDocPath(w, r)
+	team, site, key, coll, id, ok := s.validDocPath(w, r, rolePublisher)
 	if !ok {
 		return
 	}
@@ -147,7 +147,7 @@ func (s *Server) handleDocPatch(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /api/db/{coll}/{id}
 func (s *Server) handleDocDelete(w http.ResponseWriter, r *http.Request) {
-	team, site, key, coll, id, ok := s.validDocPath(w, r)
+	team, site, key, coll, id, ok := s.validDocPath(w, r, rolePublisher)
 	if !ok {
 		return
 	}
@@ -172,7 +172,7 @@ func (s *Server) handleDocDelete(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /api/db/{coll}
 func (s *Server) handleCollectionDrop(w http.ResponseWriter, r *http.Request) {
-	team, site, key, ok := s.requestSiteTenant(w, r)
+	team, site, key, ok := s.requestSiteTenant(w, r, rolePublisher)
 	if !ok {
 		return
 	}
@@ -198,8 +198,8 @@ func (s *Server) handleCollectionDrop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) validDocPath(w http.ResponseWriter, r *http.Request) (team, site, key, coll, id string, ok bool) {
-	team, site, key, ok = s.requestSiteTenant(w, r)
+func (s *Server) validDocPath(w http.ResponseWriter, r *http.Request, role int) (team, site, key, coll, id string, ok bool) {
+	team, site, key, ok = s.requestSiteTenant(w, r, role)
 	if !ok {
 		return "", "", "", "", "", false
 	}
@@ -211,10 +211,13 @@ func (s *Server) validDocPath(w http.ResponseWriter, r *http.Request) (team, sit
 	return team, site, key, coll, id, true
 }
 
-func (s *Server) requestSiteTenant(w http.ResponseWriter, r *http.Request) (team, site, key string, ok bool) {
+func (s *Server) requestSiteTenant(w http.ResponseWriter, r *http.Request, role int) (team, site, key string, ok bool) {
 	team, site, ok = s.siteFromHost(r.Host)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "site API requires a <site>.<team> host")
+		return "", "", "", false
+	}
+	if _, ok := s.requireTeamRole(w, r, team, role); !ok {
 		return "", "", "", false
 	}
 	return team, site, tenantKey(team, site), true

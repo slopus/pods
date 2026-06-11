@@ -185,11 +185,24 @@ func (s *Server) removeSiteTeam(team, name string) error {
 }
 
 // GET /api/sites
-func (s *Server) handleSiteList(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleSiteList(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
 	sites, err := s.listSites()
 	if err != nil {
 		respondErr(w, err)
 		return
+	}
+	if !user.Admin {
+		filtered := sites[:0]
+		for _, site := range sites {
+			if site.Team == publicTeam || user.hasRole(site.Team, roleReader) {
+				filtered = append(filtered, site)
+			}
+		}
+		sites = filtered
 	}
 	writeJSON(w, http.StatusOK, api.SiteList{Sites: sites})
 }
@@ -210,6 +223,9 @@ func (s *Server) handleTeamSiteDeploy(w http.ResponseWriter, r *http.Request, te
 	}
 	if !siteNameRe.MatchString(name) {
 		writeError(w, http.StatusBadRequest, "invalid site name %q", name)
+		return
+	}
+	if !s.requireTeamPublish(w, r, team) {
 		return
 	}
 	body := http.MaxBytesReader(w, r.Body, maxSiteBytes)
@@ -281,6 +297,9 @@ func (s *Server) handleTeamSiteDelete(w http.ResponseWriter, r *http.Request, te
 	}
 	if !siteNameRe.MatchString(name) {
 		writeError(w, http.StatusBadRequest, "invalid site name %q", name)
+		return
+	}
+	if _, ok := s.requireTeamRole(w, r, team, rolePublisher); !ok {
 		return
 	}
 	dir := s.siteDir(team, name)
@@ -482,6 +501,9 @@ func (s *Server) serveSitePath(w http.ResponseWriter, r *http.Request, team, sit
 	root := s.siteDir(team, site)
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {
 		s.notFoundPage(w)
+		return
+	}
+	if !s.requireAppAccess(w, r, team, site) {
 		return
 	}
 	rel := path.Clean("/" + requestPath)

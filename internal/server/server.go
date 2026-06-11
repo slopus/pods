@@ -3,7 +3,6 @@
 package server
 
 import (
-	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -36,13 +35,15 @@ var webFS embed.FS
 // Config configures a Server.
 type Config struct {
 	DataDir   string // data directory (sites/ and tenant-scoped db.json live here)
-	Secret    string // bearer secret for /api/*
+	Secret    string // bootstrap admin bearer token
+	AuthFile  string // optional auth.json path; defaults to <DataDir>/auth.json
 	PublicURL string // optional base URL for printed site URLs
 }
 
 // Server is the podbay HTTP handler.
 type Server struct {
 	cfg     Config
+	auth    *authenticator
 	store   *store.Store
 	events  *eventHub
 	mux     *http.ServeMux
@@ -59,6 +60,14 @@ func New(cfg Config) (*Server, error) {
 	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "sites"), 0o755); err != nil {
 		return nil, fmt.Errorf("server: create sites dir: %w", err)
 	}
+	authPath := cfg.AuthFile
+	if authPath == "" {
+		authPath = filepath.Join(cfg.DataDir, "auth.json")
+	}
+	auth, err := newAuthenticator(authPath, cfg.Secret)
+	if err != nil {
+		return nil, err
+	}
 	st, err := store.Open(filepath.Join(cfg.DataDir, "db.json"))
 	if err != nil {
 		return nil, err
@@ -71,7 +80,7 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("server: read pods.js: %w", err)
 	}
-	s := &Server{cfg: cfg, store: st, events: newEventHub(), landing: landing, podsJS: podsJS}
+	s := &Server{cfg: cfg, auth: auth, store: st, events: newEventHub(), landing: landing, podsJS: podsJS}
 	s.routes()
 	return s, nil
 }
@@ -96,62 +105,38 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /sites/{team}/{site}", s.handleTeamSiteRedirect)
 	mux.HandleFunc("GET /sites/{team}/{site}/{path...}", s.handleTeamSiteFile)
 
-	// Bearer-authenticated API.
-	mux.HandleFunc("/api/", s.auth(s.handleAPINotFound)) // JSON 404 fallback
-	mux.HandleFunc("GET /api/events", s.auth(s.handleEvents))
-	mux.HandleFunc("GET /api/sites", s.auth(s.handleSiteList))
-	mux.HandleFunc("PUT /api/sites/{name}", s.publicOrAuth(s.handleSiteDeploy))
-	mux.HandleFunc("DELETE /api/sites/{name}", s.auth(s.handleSiteDelete))
-	mux.HandleFunc("PUT /api/teams/{team}/sites/{name}", s.teamPublishAuth(s.handleTeamSiteDeployRoute))
-	mux.HandleFunc("DELETE /api/teams/{team}/sites/{name}", s.auth(s.handleTeamSiteDeleteRoute))
-	mux.HandleFunc("GET /api/db", s.auth(s.handleCollections))
-	mux.HandleFunc("GET /api/db/{coll}", s.auth(s.handleQuery))
-	mux.HandleFunc("POST /api/db/{coll}", s.auth(s.handleDocCreate))
-	mux.HandleFunc("DELETE /api/db/{coll}", s.auth(s.handleCollectionDrop))
-	mux.HandleFunc("GET /api/db/{coll}/{id}", s.auth(s.handleDocGet))
-	mux.HandleFunc("PUT /api/db/{coll}/{id}", s.auth(s.handleDocSet))
-	mux.HandleFunc("PATCH /api/db/{coll}/{id}", s.auth(s.handleDocPatch))
-	mux.HandleFunc("DELETE /api/db/{coll}/{id}", s.auth(s.handleDocDelete))
+	// API handlers authorize against auth.json, team roles, and app policies.
+	mux.HandleFunc("/api/", s.requireAuth(s.handleAPINotFound)) // JSON 404 fallback
+	mux.HandleFunc("GET /api/me", s.handleMe)
+	mux.HandleFunc("GET /api/auth/providers", s.handleAuthProviders)
+	mux.HandleFunc("GET /api/auth/login/{provider}", s.handleOAuthLogin)
+	mux.HandleFunc("GET /api/auth/callback/{provider}", s.handleOAuthCallback)
+	mux.HandleFunc("POST /api/auth/logout", s.handleOAuthLogout)
+	mux.HandleFunc("GET /api/events", s.handleEvents)
+	mux.HandleFunc("GET /api/sites", s.handleSiteList)
+	mux.HandleFunc("PUT /api/sites/{name}", s.handleSiteDeploy)
+	mux.HandleFunc("DELETE /api/sites/{name}", s.handleSiteDelete)
+	mux.HandleFunc("PUT /api/teams/{team}/sites/{name}", s.handleTeamSiteDeployRoute)
+	mux.HandleFunc("DELETE /api/teams/{team}/sites/{name}", s.handleTeamSiteDeleteRoute)
+	mux.HandleFunc("GET /api/db", s.handleCollections)
+	mux.HandleFunc("GET /api/db/{coll}", s.handleQuery)
+	mux.HandleFunc("POST /api/db/{coll}", s.handleDocCreate)
+	mux.HandleFunc("DELETE /api/db/{coll}", s.handleCollectionDrop)
+	mux.HandleFunc("GET /api/db/{coll}/{id}", s.handleDocGet)
+	mux.HandleFunc("PUT /api/db/{coll}/{id}", s.handleDocSet)
+	mux.HandleFunc("PATCH /api/db/{coll}/{id}", s.handleDocPatch)
+	mux.HandleFunc("DELETE /api/db/{coll}/{id}", s.handleDocDelete)
 
 	s.mux = mux
 }
 
-// auth wraps an API handler with constant-time bearer-secret verification.
-func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
+func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !hasValidBearer(r, s.cfg.Secret) {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
+		if _, ok := s.requireUser(w, r); !ok {
 			return
 		}
 		next(w, r)
 	}
-}
-
-func (s *Server) publicOrAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if hasValidBearer(r, s.cfg.Secret) || r.PathValue("team") == "" {
-			next(w, r)
-			return
-		}
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-	}
-}
-
-func (s *Server) teamPublishAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.PathValue("team") == publicTeam || hasValidBearer(r, s.cfg.Secret) {
-			next(w, r)
-			return
-		}
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-	}
-}
-
-func hasValidBearer(r *http.Request, secret string) bool {
-	scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
-	token = strings.TrimSpace(token)
-	return strings.EqualFold(scheme, "Bearer") &&
-		subtle.ConstantTimeCompare([]byte(token), []byte(secret)) == 1
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {

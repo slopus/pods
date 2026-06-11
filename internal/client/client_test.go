@@ -67,6 +67,31 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+func TestMe(t *testing.T) {
+	var gotAuth string
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/me", func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		writeJSON(t, w, http.StatusOK, api.Me{
+			Authenticated: true,
+			User:          &api.UserProfile{ID: "alice", Name: "Alice"},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	me, err := client.New(srv.URL, "alice-token").Me(context.Background())
+	if err != nil {
+		t.Fatalf("Me: %v", err)
+	}
+	if gotAuth != "Bearer alice-token" {
+		t.Errorf("Authorization = %q, want %q", gotAuth, "Bearer alice-token")
+	}
+	if !me.Authenticated || me.User == nil || me.User.ID != "alice" {
+		t.Fatalf("me = %+v", me)
+	}
+}
+
 func TestDeploy(t *testing.T) {
 	var gotName, gotContentType, gotBody string
 	mux := http.NewServeMux()

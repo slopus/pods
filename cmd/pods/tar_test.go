@@ -64,6 +64,8 @@ func TestResolveConfigPrecedence(t *testing.T) {
 			return "http://env"
 		case "PODS_SECRET":
 			return "env-secret"
+		case "PODS_TOKEN":
+			return "env-token"
 		default:
 			return ""
 		}
@@ -75,7 +77,7 @@ func TestResolveConfigPrecedence(t *testing.T) {
 	}
 
 	cfg = resolveConfig("", "", env, file)
-	if cfg.Endpoint != "http://env" || cfg.Secret != "env-secret" {
+	if cfg.Endpoint != "http://env" || cfg.Secret != "env-token" {
 		t.Fatalf("env did not beat file: %+v", cfg)
 	}
 

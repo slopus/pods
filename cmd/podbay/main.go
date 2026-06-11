@@ -33,7 +33,8 @@ func run(args []string) error {
 	fs := flag.NewFlagSet("podbay", flag.ContinueOnError)
 	addr := fs.String("addr", envDefault("PODBAY_ADDR", ":7777"), "listen address")
 	dataDir := fs.String("data", envDefault("PODBAY_DATA", "./data"), "data directory")
-	secretFlag := fs.String("secret", os.Getenv("PODBAY_SECRET"), "API bearer secret")
+	secretFlag := fs.String("secret", os.Getenv("PODBAY_SECRET"), "bootstrap admin bearer token")
+	authFile := fs.String("auth", os.Getenv("PODBAY_AUTH_FILE"), "auth config JSON file (defaults to <data>/auth.json)")
 	publicURL := fs.String("public-url", os.Getenv("PODBAY_PUBLIC_URL"), "public base URL for generated site URLs")
 	showVersion := fs.Bool("version", false, "print version")
 	if err := fs.Parse(args); err != nil {
@@ -58,6 +59,7 @@ func run(args []string) error {
 	app, err := server.New(server.Config{
 		DataDir:   *dataDir,
 		Secret:    secret,
+		AuthFile:  *authFile,
 		PublicURL: *publicURL,
 	})
 	if err != nil {

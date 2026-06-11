@@ -72,6 +72,13 @@ func (c *Client) Health(ctx context.Context) (api.Health, error) {
 	return out, err
 }
 
+// Me calls GET /api/me and returns the current authenticated user profile.
+func (c *Client) Me(ctx context.Context) (api.Me, error) {
+	var out api.Me
+	err := c.do(ctx, http.MethodGet, "/api/me", nil, nil, "", &out)
+	return out, err
+}
+
 // Sites calls GET /api/sites and returns the deployed sites.
 func (c *Client) Sites(ctx context.Context) ([]api.Site, error) {
 	var out api.SiteList

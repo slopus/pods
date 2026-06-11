@@ -24,7 +24,7 @@ Usage:
 
 Commands:
 
-  login [--endpoint URL] [--secret S]  authenticate against a podbay server
+  login [--endpoint URL] [--token T]   authenticate against a podbay server
   logout                               delete the saved config
   status                               show endpoint, health, sites, and endpoint collections
   init [dir]                           scaffold a starter site
@@ -42,8 +42,8 @@ Commands:
   version                              print the CLI version
   help                                 show this help
 
-Configuration (highest wins): --endpoint/--secret flags, then the
-PODS_ENDPOINT/PODS_SECRET environment variables, then ~/.config/pods/config.json.
+Configuration (highest wins): --endpoint/--token flags, then the
+PODS_ENDPOINT/PODS_TOKEN/PODS_SECRET environment variables, then ~/.config/pods/config.json.
 `
 
 func main() {
@@ -96,7 +96,8 @@ func run(args []string) error {
 func newFlagSet(name string) (fs *flag.FlagSet, endpoint, secret *string) {
 	fs = flag.NewFlagSet("pods "+name, flag.ContinueOnError)
 	endpoint = fs.String("endpoint", "", "server endpoint URL (overrides PODS_ENDPOINT and the config file)")
-	secret = fs.String("secret", "", "API secret (overrides PODS_SECRET and the config file)")
+	secret = fs.String("secret", "", "API token (deprecated alias for --token)")
+	fs.StringVar(secret, "token", "", "API token (overrides PODS_TOKEN, PODS_SECRET, and the config file)")
 	return fs, endpoint, secret
 }
 

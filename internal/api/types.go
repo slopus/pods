@@ -13,6 +13,37 @@ type Error struct {
 	Error string `json:"error"`
 }
 
+// UserProfile is the public shape of an authenticated user.
+type UserProfile struct {
+	ID    string            `json:"id"`
+	Name  string            `json:"name,omitempty"`
+	Email string            `json:"email,omitempty"`
+	Admin bool              `json:"admin,omitempty"`
+	Teams map[string]string `json:"teams,omitempty"`
+}
+
+// Me is the response of GET /api/me.
+type Me struct {
+	Authenticated bool         `json:"authenticated"`
+	User          *UserProfile `json:"user,omitempty"`
+	Team          string       `json:"team,omitempty"`
+	Site          string       `json:"site,omitempty"`
+	AppAuth       string       `json:"app_auth,omitempty"`
+	LoginURL      string       `json:"login_url,omitempty"`
+}
+
+// AuthProvider describes an OAuth/OIDC login option.
+type AuthProvider struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	LoginURL string `json:"login_url"`
+}
+
+// AuthProviders is the response of GET /api/auth/providers.
+type AuthProviders struct {
+	Providers []AuthProvider `json:"providers"`
+}
+
 // Site describes one deployed static site.
 type Site struct {
 	Name      string    `json:"name"`

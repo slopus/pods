@@ -9,6 +9,7 @@ import (
 )
 
 // config is the persisted CLI configuration (~/.config/pods/config.json).
+// Secret is kept as the JSON field name for compatibility; it stores an API token.
 type config struct {
 	Endpoint string `json:"endpoint"`
 	Secret   string `json:"secret"`
@@ -58,7 +59,7 @@ func saveConfigFile(path string, cfg config) error {
 }
 
 // resolveConfig applies the configuration precedence: flags beat the
-// PODS_ENDPOINT/PODS_SECRET environment variables, which beat the config
+// PODS_ENDPOINT/PODS_TOKEN/PODS_SECRET environment variables, which beat the config
 // file. Endpoint and secret are resolved independently.
 func resolveConfig(flagEndpoint, flagSecret string, getenv func(string) string, file config) config {
 	cfg := file
@@ -66,6 +67,9 @@ func resolveConfig(flagEndpoint, flagSecret string, getenv func(string) string, 
 		cfg.Endpoint = v
 	}
 	if v := getenv("PODS_SECRET"); v != "" {
+		cfg.Secret = v
+	}
+	if v := getenv("PODS_TOKEN"); v != "" {
 		cfg.Secret = v
 	}
 	if flagEndpoint != "" {

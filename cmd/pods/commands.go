@@ -34,7 +34,7 @@ func cmdLogin(args []string) error {
 		return err
 	}
 	if fs.NArg() > 0 {
-		return errors.New("usage: pods login [--endpoint URL] [--secret S]")
+		return errors.New("usage: pods login [--endpoint URL] [--token T]")
 	}
 
 	ep, sec := *endpoint, *secret
@@ -54,7 +54,7 @@ func cmdLogin(args []string) error {
 	}
 	if sec == "" {
 		if isTTY {
-			fmt.Fprint(os.Stderr, "secret: ")
+			fmt.Fprint(os.Stderr, "token: ")
 			b, err := term.ReadPassword(int(os.Stdin.Fd()))
 			fmt.Fprintln(os.Stderr)
 			if err != nil {
@@ -72,8 +72,12 @@ func cmdLogin(args []string) error {
 
 	ep = normalizeEndpoint(ep)
 	c := client.New(ep, sec)
-	if _, err := c.Sites(context.Background()); err != nil {
+	me, err := c.Me(context.Background())
+	if err != nil {
 		return fmt.Errorf("login failed: %w", err)
+	}
+	if !me.Authenticated || me.User == nil {
+		return errors.New("login failed: token was not accepted")
 	}
 
 	path, err := configPath()
@@ -83,7 +87,7 @@ func cmdLogin(args []string) error {
 	if err := saveConfigFile(path, config{Endpoint: c.Endpoint(), Secret: sec}); err != nil {
 		return err
 	}
-	fmt.Printf("logged in to %s\n", c.Endpoint())
+	fmt.Printf("logged in to %s as %s\n", c.Endpoint(), me.User.ID)
 	return nil
 }
 
@@ -122,6 +126,13 @@ func cmdStatus(args []string) error {
 	}
 	fmt.Printf("endpoint:    %s\n", c.Endpoint())
 	fmt.Printf("health:      %s\n", health)
+	if me, err := c.Me(ctx); err == nil && me.Authenticated && me.User != nil {
+		fmt.Printf("user:        %s\n", me.User.ID)
+	} else if err == nil {
+		fmt.Printf("user:        anonymous\n")
+	} else {
+		fmt.Printf("user:        unavailable (%v)\n", err)
+	}
 
 	sites, err := c.Sites(ctx)
 	if err != nil {
@@ -172,11 +183,12 @@ const starterIndexHTML = `<!doctype html>
 
   <!--
     Need a database? Happy Pods ships a tiny JSON store with a zero-dependency
-    browser client. Uncomment and add your API secret:
+    browser client. Uncomment and add an API token:
 
     <script src="/pods.js"></script>
     <script type="module">
-      const pods = Pods({ secret: "your-api-secret" });
+      const pods = Pods({ token: "your-api-token" });
+      console.log(await pods.me());
       const posts = pods.db.collection("posts");
       await posts.create({ title: "hello, pods" });
       const { docs } = await posts.query({ sort: "-created_at", limit: 10 });

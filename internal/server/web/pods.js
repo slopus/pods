@@ -20,7 +20,7 @@
   function Pods(options) {
     options = options || {};
     var endpoint = trimEndpoint(options.endpoint);
-    var secret = options.secret || "";
+    var secret = options.token || options.secret || "";
 
     function request(method, path, body) {
       var headers = { "Accept": "application/json" };
@@ -115,8 +115,19 @@
       return { close: function () { controller.abort(); } };
     }
 
+    function authProviders(opts) {
+      opts = opts || {};
+      var path = "/api/auth/providers";
+      if (opts.returnTo) path += "?return_to=" + encodeURIComponent(opts.returnTo);
+      return request("GET", path).then(function (res) { return res.providers; });
+    }
+
     return {
       endpoint: endpoint,
+      me: function (opts) {
+        opts = opts || {};
+        return request("GET", "/api/me" + (opts.required ? "?required=1" : ""));
+      },
       events: events,
       db: {
         collection: collection,
@@ -126,6 +137,12 @@
       },
       sites: function () {
         return request("GET", "/api/sites").then(function (res) { return res.sites; });
+      },
+      auth: {
+        providers: authProviders,
+        logout: function () {
+          return request("POST", "/api/auth/logout");
+        }
       }
     };
   }

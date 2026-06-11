@@ -10,6 +10,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -197,9 +199,178 @@ func TestPodEventStream(t *testing.T) {
 	}
 }
 
+func TestAuthConfigMeAndTeamPermissions(t *testing.T) {
+	app := newTestAppWithAuth(t, `{
+	  "users": [
+	    {
+	      "id": "alice",
+	      "name": "Alice",
+	      "email": "alice@example.test",
+	      "tokens": ["alice-token"],
+	      "teams": {"ops": "publisher"}
+	    },
+	    {
+	      "id": "riley",
+	      "tokens": ["reader-token"],
+	      "teams": {"ops": "reader"}
+	    }
+	  ],
+	  "teams": {
+	    "public": {"name": "Public", "public_publish": true},
+	    "ops": {"name": "Ops"}
+	  },
+	  "apps": [
+	    {"team": "ops", "site": "private", "auth": "required"}
+	  ]
+	}`)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req.Header.Set("Authorization", "Bearer alice-token")
+	req.Host = "private.ops.example.test"
+	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /api/me status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var me api.Me
+	if err := json.Unmarshal(rr.Body.Bytes(), &me); err != nil {
+		t.Fatalf("decode /api/me: %v", err)
+	}
+	if !me.Authenticated || me.User == nil || me.User.ID != "alice" || me.Team != "ops" || me.Site != "private" || me.AppAuth != "required" {
+		t.Fatalf("me = %+v", me)
+	}
+
+	archive := makeTarGz(t, map[string]string{"index.html": "<h1>Private</h1>"})
+	req = httptest.NewRequest(http.MethodPut, "/api/teams/ops/sites/private", bytes.NewReader(archive))
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("deploy without auth status = %d, want 401", rr.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodPut, "/api/teams/ops/sites/private", bytes.NewReader(archive))
+	req.Header.Set("Authorization", "Bearer reader-token")
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("deploy as reader status = %d, want 403 body=%s", rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPut, "/api/teams/ops/sites/private", bytes.NewReader(archive))
+	req.Header.Set("Authorization", "Bearer alice-token")
+	req.Host = "pods.test"
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("deploy as publisher status = %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "private.ops.example.test"
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("protected app without auth status = %d, want 401", rr.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer alice-token")
+	req.Host = "private.ops.example.test"
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "Private") {
+		t.Fatalf("protected app with auth status=%d body=%q", rr.Code, rr.Body.String())
+	}
+}
+
+func TestPublicDeployCanBeDisabledInAuthConfig(t *testing.T) {
+	app := newTestAppWithAuth(t, `{
+	  "users": [
+	    {"id": "admin", "tokens": ["admin-token"], "admin": true, "teams": {"*": "admin"}}
+	  ],
+	  "teams": {
+	    "public": {"name": "Public", "public_publish": false}
+	  }
+	}`)
+	archive := makeTarGz(t, map[string]string{"index.html": "<h1>Nope</h1>"})
+
+	req := httptest.NewRequest(http.MethodPut, "/api/sites/demo", bytes.NewReader(archive))
+	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("public deploy without auth status = %d, want 401", rr.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodPut, "/api/sites/demo", bytes.NewReader(archive))
+	req.Header.Set("Authorization", "Bearer admin-token")
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("public deploy with admin status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestOAuthSessionMapsUserByEmail(t *testing.T) {
+	auth, err := buildAuthenticator(authFile{
+		Users: []authUserConfig{{
+			ID:    "alice",
+			Email: "alice@example.test",
+			Teams: map[string]string{"ops": "publisher"},
+		}},
+		Teams: map[string]authTeamFile{
+			publicTeam: {Name: "Public", PublicPublish: true},
+			"ops":      {Name: "Ops"},
+		},
+		OAuth: authOAuthFile{SessionSecret: "session-secret"},
+	}, "")
+	if err != nil {
+		t.Fatalf("buildAuthenticator: %v", err)
+	}
+	auth.oauth["google"] = &oauthProvider{
+		id:             "google",
+		allowedDomains: stringSetLower([]string{"example.test"}),
+		allowedEmails:  map[string]struct{}{},
+	}
+
+	value, err := auth.secure.Encode(sessionCookieName, oauthSession{
+		Provider: "google",
+		Subject:  "subject-1",
+		Email:    "alice@example.test",
+		Name:     "Alice",
+		Expires:  time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("encode session: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: value})
+
+	user, ok := auth.authenticate(req)
+	if !ok {
+		t.Fatal("oauth session did not authenticate")
+	}
+	if user.ID != "alice" || !user.hasRole("ops", rolePublisher) {
+		t.Fatalf("user = %+v", user)
+	}
+}
+
 func newTestApp(t *testing.T) *Server {
 	t.Helper()
 	app, err := New(Config{DataDir: t.TempDir(), Secret: "secret"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return app
+}
+
+func newTestAppWithAuth(t *testing.T, authJSON string) *Server {
+	t.Helper()
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "auth.json")
+	if err := os.WriteFile(authPath, []byte(authJSON), 0o600); err != nil {
+		t.Fatalf("write auth.json: %v", err)
+	}
+	app, err := New(Config{DataDir: dir, Secret: "secret", AuthFile: authPath})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
