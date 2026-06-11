@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -9,7 +10,7 @@ import (
 )
 
 func TestStoreCRUDAndPersistence(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "db.json")
+	path := filepath.Join(t.TempDir(), "db.sqlite")
 	s, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -58,7 +59,7 @@ func TestStoreCRUDAndPersistence(t *testing.T) {
 }
 
 func TestStoreQuery(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "db.json"))
+	s, err := Open(filepath.Join(t.TempDir(), "db.sqlite"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -100,5 +101,39 @@ func TestStoreQuery(t *testing.T) {
 	res = s.Query("ops/demo", "posts", Query{})
 	if res.Total != 1 || res.Docs[0][FieldID] != "z" {
 		t.Fatalf("tenant isolation query = %+v", res)
+	}
+}
+
+func TestStoreMigratesLegacyJSON(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `{
+	  "pods": {
+	    "public/demo": {
+	      "collections": {
+	        "views": {
+	          "a": {
+	            "id": "a",
+	            "visitor": "one",
+	            "created_at": "2026-06-10T12:00:00Z",
+	            "updated_at": "2026-06-10T12:00:00Z"
+	          }
+	        }
+	      }
+	    }
+	  }
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "db.json"), []byte(legacy), 0o644); err != nil {
+		t.Fatalf("write legacy db.json: %v", err)
+	}
+	s, err := Open(filepath.Join(dir, "db.sqlite"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	got, ok := s.Get("public/demo", "views", "a")
+	if !ok {
+		t.Fatal("migrated doc not found")
+	}
+	if got["visitor"] != "one" || got[FieldCreatedAt] != "2026-06-10T12:00:00Z" {
+		t.Fatalf("migrated doc = %+v", got)
 	}
 }

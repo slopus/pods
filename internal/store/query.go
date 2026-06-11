@@ -27,15 +27,16 @@ type Query struct {
 // before limit/offset are applied. A missing pod or collection yields an
 // empty result.
 func (s *Store) Query(pod, coll string, q Query) api.QueryResult {
-	s.mu.RLock()
-	collDocs := s.pods[pod][coll]
+	collDocs, err := s.collectionDocs(pod, coll)
+	if err != nil {
+		return api.QueryResult{}
+	}
 	docs := make([]api.Doc, 0, len(collDocs))
 	for _, d := range collDocs {
 		if matchesAll(d, q.Where) {
 			docs = append(docs, copyDoc(d))
 		}
 	}
-	s.mu.RUnlock()
 
 	// Deterministic base order before the user sort.
 	sort.Slice(docs, func(i, j int) bool {

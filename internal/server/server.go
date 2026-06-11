@@ -34,7 +34,7 @@ var webFS embed.FS
 
 // Config configures a Server.
 type Config struct {
-	DataDir   string // data directory (sites/ and tenant-scoped db.json live here)
+	DataDir   string // data directory (sites/ and tenant-scoped db.sqlite live here)
 	Secret    string // bootstrap admin bearer token
 	AuthFile  string // optional auth.json path; defaults to <DataDir>/auth.json
 	PublicURL string // optional base URL for printed site URLs
@@ -68,7 +68,7 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	st, err := store.Open(filepath.Join(cfg.DataDir, "db.json"))
+	st, err := store.Open(filepath.Join(cfg.DataDir, "db.sqlite"))
 	if err != nil {
 		return nil, err
 	}

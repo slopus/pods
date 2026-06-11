@@ -1,5 +1,5 @@
 // Command pods is the Happy Pods CLI: deploy a folder of static files to a
-// podbay server, get a URL, and poke at the tiny JSON document store.
+// podbay server, get a URL, and poke at the tiny SQLite document store.
 package main
 
 import (

@@ -2,7 +2,7 @@
 
 # Happy Pods
 
-Deploy a folder, get a URL. Plus a tiny Firebase-style JSON document store.
+Deploy a folder, get a URL. Plus a tiny Firebase-style SQLite document store.
 
 Happy Pods is a self-hostable clone of Shopify's internal **Quick** platform, lovingly
 inspired by their write-up: [How We Built Quick, Shopify's Internal Deployment Tool](https://shopify.engineering/quick).
@@ -22,7 +22,7 @@ build pipeline, a YAML sacrifice, or a cloud bill. Happy Pods gives you:
   simple queries, usable from the CLI or straight from the browser via `/pods.js`.
 - **File-backed OAuth** — OIDC providers, session settings, machine tokens, team roles,
   and per-app auth policies live in one editable `auth.json`.
-- **Boring tech** — one static binary each, files on disk, a single JSON file for the DB.
+- **Boring tech** — one static binary each, files on disk, and SQLite for the DB.
 
 The Quick-style tradeoff, stated honestly: **deployed sites and the landing page are open
 by default to everyone who can reach the server.** Apps can opt into required auth in
@@ -216,10 +216,11 @@ Every podbay serves a tiny browser client at `/pods.js`. On a site subdomain, sa
 
 ## The JSON store
 
-Documents are JSON objects. The server injects and maintains three reserved fields:
+Documents are JSON objects stored in SQLite. The server injects and maintains three reserved fields:
 `id` (16 hex chars), `created_at`, and `updated_at` (RFC3339 UTC). Clients can't override
 `id`, `created_at`, or `updated_at` — the server always wins. Documents are partitioned
-by `<team>/<site>` and persisted to `<data>/db.json` atomically on every mutation.
+by `<team>/<site>` and persisted to `<data>/db.sqlite`. If a legacy `<data>/db.json`
+exists and the SQLite DB is empty, podbay imports the JSON data on startup.
 
 ### Query semantics (`GET /api/db/{coll}`)
 
@@ -250,7 +251,7 @@ pods db posts list --where status=draft --sort -created_at --limit 10
   <data>/auth.json         # users, teams, app auth policies
   <data>/sites/<team>/<name>/...  # deployed static files
   <data>/sites.json               # site team metadata
-  <data>/db.json                  # tenant-scoped JSON store
+  <data>/db.sqlite                # tenant-scoped SQLite document store
   ```
 
 - **DNS / reverse proxy**: point wildcard DNS such as `*.pods.example.com` at podbay.
@@ -259,8 +260,8 @@ pods db posts list --where status=draft --sort -created_at --limit 10
 
 ## Development
 
-Go 1.25 with small auth/CLI dependencies (`go-oidc`, `oauth2`, `securecookie`,
-and `golang.org/x/term`).
+Go 1.25 with SQLite/auth/CLI dependencies (`modernc.org/sqlite`, `go-oidc`, `oauth2`,
+`securecookie`, and `golang.org/x/term`).
 
 | Target | What it does |
 |---|---|
