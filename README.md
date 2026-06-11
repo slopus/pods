@@ -38,15 +38,26 @@ everyone else.
 
 ### Use the hosted instance (podbay.dev)
 
-Install the CLI (`go install github.com/slopus/pods/cmd/pods@latest`, or clone this repo
-and `make build` to get `bin/pods`), then:
+Install the CLI (Linux & macOS) with one line:
 
 ```sh
-pods login --endpoint https://podbay.dev   # 1. GitHub device flow: opens github.com/login/device
+curl -fsSL https://podbay.dev/install.sh | sh
+```
+
+It detects your OS/CPU and drops `pods` into `/usr/local/bin` (or `~/.local/bin`).
+Prefer something else? `go install github.com/slopus/pods/cmd/pods@latest`, grab a binary
+from the [latest release](https://github.com/slopus/pods/releases/latest), or clone and
+`make build`. Then:
+
+```sh
+pods login                                 # 1. GitHub device flow against podbay.dev (the default)
 pods init hello                            # 2. scaffold pods.json + index.html
 pods deploy hello                          # 3. ship it
 pods open hello                            # 4. https://hello.podbay.dev
 ```
+
+`pods login` targets `https://podbay.dev` by default; pass `--endpoint` only for a
+self-hosted server.
 
 ### Self-host with Docker
 

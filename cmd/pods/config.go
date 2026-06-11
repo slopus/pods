@@ -8,6 +8,10 @@ import (
 	"path/filepath"
 )
 
+// defaultEndpoint is the hosted Happy Pods instance the CLI talks to when no
+// endpoint is configured, so `pods login` just works out of the box.
+const defaultEndpoint = "https://podbay.dev"
+
 // config is the persisted CLI configuration (~/.config/pods/config.json).
 // Secret is kept as the JSON field name for compatibility; it stores an API token.
 type config struct {
@@ -77,6 +81,9 @@ func resolveConfig(flagEndpoint, flagSecret string, getenv func(string) string, 
 	}
 	if flagSecret != "" {
 		cfg.Secret = flagSecret
+	}
+	if cfg.Endpoint == "" {
+		cfg.Endpoint = defaultEndpoint
 	}
 	return cfg
 }

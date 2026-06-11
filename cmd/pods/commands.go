@@ -36,20 +36,9 @@ func cmdLogin(args []string) error {
 	}
 
 	ep, sec := *endpoint, *secret
-	stdin := bufio.NewReader(os.Stdin)
-
 	if ep == "" {
-		fmt.Fprint(os.Stderr, "endpoint: ")
-		line, err := readLine(stdin)
-		if err != nil {
-			return err
-		}
-		ep = line
+		ep = defaultEndpoint
 	}
-	if ep == "" {
-		return errors.New("endpoint is required")
-	}
-
 	ep = normalizeEndpoint(ep)
 	if sec == "" {
 		return cmdGitHubLogin(ep)

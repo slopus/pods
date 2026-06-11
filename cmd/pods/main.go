@@ -24,7 +24,7 @@ Usage:
 
 Commands:
 
-  login [--endpoint URL] [--token T]   authenticate with GitHub device OAuth, or save an API token
+  login [--endpoint URL] [--token T]   sign in to podbay.dev with GitHub (or --endpoint for self-hosted; --token to save an API token)
   logout                               delete the saved config
   status                               show endpoint, health, sites, and endpoint collections
   init [dir]                           scaffold a starter site

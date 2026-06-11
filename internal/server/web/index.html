@@ -356,24 +356,19 @@
           <h3>Install the CLI</h3>
           <div class="cmd">
             <span class="p" aria-hidden="true">$</span>
-            <code>go install github.com/slopus/pods/cmd/pods@latest</code>
+            <code>curl -fsSL https://podbay.dev/install.sh | sh</code>
             <button class="copy" type="button" aria-label="Copy install command">copy</button>
           </div>
-          <p>Or build from source:</p>
-          <div class="cmd">
-            <span class="p" aria-hidden="true">$</span>
-            <code>git clone https://github.com/slopus/pods &amp;&amp; make build</code>
-            <button class="copy" type="button" aria-label="Copy clone-and-build command">copy</button>
-          </div>
+          <p>One line, Linux &amp; macOS. Or <code>go install github.com/slopus/pods/cmd/pods@latest</code>, or grab a binary from <a href="https://github.com/slopus/pods/releases/latest" rel="noopener">Releases</a>.</p>
         </li>
         <li>
           <h3>Sign in with GitHub</h3>
           <div class="cmd">
             <span class="p" aria-hidden="true">$</span>
-            <code>pods login --endpoint https://podbay.dev</code>
+            <code>pods login</code>
             <button class="copy" type="button" aria-label="Copy login command">copy</button>
           </div>
-          <p>Opens GitHub device login &mdash; you get a short code, authorize it in the browser, done.</p>
+          <p>Defaults to podbay.dev and opens GitHub device login &mdash; you get a short code, authorize it in the browser, done.</p>
         </li>
         <li>
           <h3>Create and deploy</h3>

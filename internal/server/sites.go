@@ -481,7 +481,7 @@ func (s *Server) handleSubdomainSite(w http.ResponseWriter, r *http.Request) boo
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
 	}
-	if r.URL.Path == "/pods.js" || r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/sites/") {
+	if r.URL.Path == "/pods.js" || r.URL.Path == "/install.sh" || r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/sites/") {
 		return false
 	}
 	site, ok := s.siteFromHost(r.Host)

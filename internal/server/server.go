@@ -52,9 +52,10 @@ type Server struct {
 	identity *identityStore
 	store    *store.Store
 	events   *eventHub
-	mux      *http.ServeMux
-	landing  *template.Template
-	podsJS   []byte
+	mux       *http.ServeMux
+	landing   *template.Template
+	podsJS    []byte
+	installSH []byte
 
 	metaMu    sync.Mutex             // guards sites.json load-modify-save
 	siteMu    sync.Mutex             // guards siteLocks
@@ -121,8 +122,13 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("server: read pods.js: %w", err)
 	}
+	installSH, err := webFS.ReadFile("web/install.sh")
+	if err != nil {
+		return nil, fmt.Errorf("server: read install.sh: %w", err)
+	}
 	s.landing = landing
 	s.podsJS = podsJS
+	s.installSH = installSH
 	s.routes()
 	return s, nil
 }
@@ -142,6 +148,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /{$}", s.handleLanding)
 	mux.HandleFunc("GET /pods.js", s.handlePodsJS)
+	mux.HandleFunc("GET /install.sh", s.handleInstallSH)
 	mux.HandleFunc("GET /sites/{site}", s.handleSiteRedirect)
 	mux.HandleFunc("GET /sites/{site}/{path...}", s.handleSiteFile)
 

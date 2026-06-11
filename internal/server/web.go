@@ -41,3 +41,10 @@ func (s *Server) handlePodsJS(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	_, _ = w.Write(s.podsJS)
 }
+
+// GET /install.sh serves the CLI installer so users can run
+// `curl -fsSL https://podbay.dev/install.sh | sh`.
+func (s *Server) handleInstallSH(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+	_, _ = w.Write(s.installSH)
+}

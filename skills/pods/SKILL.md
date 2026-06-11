@@ -40,8 +40,9 @@ pods login --endpoint https://podbay.dev --token <api-token-or-static-token>
 This verifies the token against the server before saving and prints
 `logged in to <endpoint> as <user>`.
 
-Interactive only — GitHub device login. Running `pods login --endpoint URL` **without**
-`--token` starts the GitHub device flow: it prints
+Interactive only — GitHub device login. Running `pods login` **without** `--token`
+(it targets `https://podbay.dev` by default; pass `--endpoint URL` for a self-hosted
+server) starts the GitHub device flow: it prints
 `Open https://github.com/login/device and enter code XXXX-XXXX` to stderr and polls until
 a human approves in a browser. Do not use this in non-interactive automation; obtain a
 token in advance instead (a human runs the device login once, or a self-hosted server's
