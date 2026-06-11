@@ -1,146 +1,647 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Happy Pods</title>
-  <style>
-    :root { color-scheme: light dark; }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-      background: #f7f1e3;
-      color: #16202a;
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Happy Pods — deploy a folder, get a URL</title>
+<meta name="description" content="Happy Pods: deploy a folder of static files, get a URL at <name>.podbay.dev — plus a JSON document store per site with a REST API and a zero-dependency browser client.">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f4ed;
+    --raised: #fffdf7;
+    --ink: #16202f;
+    --muted: #5b6678;
+    --line: rgba(22, 32, 47, 0.14);
+    --line-soft: rgba(22, 32, 47, 0.08);
+    --accent: #0a6fa8;
+    --amber: #a8590a;
+    --ok: #166e4b;
+    --term-bg: #0b1020;
+    --term-line: rgba(231, 236, 245, 0.12);
+    --term-ink: #dce6f7;
+    --term-muted: #8b99b5;
+    --term-sky: #7dd3fc;
+    --term-amber: #fbbf24;
+    --shadow: 0 10px 24px rgba(22, 32, 47, 0.10);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1020;
+      --raised: #111936;
+      --ink: #e7ecf5;
+      --muted: #9aa7bd;
+      --line: rgba(231, 236, 245, 0.16);
+      --line-soft: rgba(231, 236, 245, 0.09);
+      --accent: #7dd3fc;
+      --amber: #fbbf24;
+      --ok: #6ee7b7;
+      --term-bg: #070c19;
+      --shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
     }
-    header {
-      padding: 56px clamp(20px, 6vw, 80px) 28px;
-      background: linear-gradient(135deg, #12343b 0%, #2d6a4f 58%, #f6bd60 100%);
-      color: #fffaf0;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    line-height: 1.55;
+    -webkit-text-size-adjust: 100%;
+  }
+  .mono, code, pre, kbd {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { width: min(100%, 980px); margin: 0 auto; padding: 0 20px; }
+  section { scroll-margin-top: 84px; }
+  .skip {
+    position: absolute; left: -9999px; top: 0;
+    background: var(--raised); padding: 8px 14px; border: 1px solid var(--line); border-radius: 6px;
+  }
+  .skip:focus { left: 12px; top: 12px; z-index: 99; }
+
+  /* ---------- top bar ---------- */
+  .top {
+    position: sticky; top: 0; z-index: 10;
+    border-bottom: 1px solid var(--line-soft);
+    background: color-mix(in srgb, var(--bg) 86%, transparent);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+  .top .wrap {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 14px; min-height: 58px; flex-wrap: wrap; padding-top: 6px; padding-bottom: 6px;
+  }
+  .brand {
+    display: inline-flex; align-items: center; gap: 10px;
+    font-weight: 750; color: var(--ink); letter-spacing: -0.01em;
+  }
+  .brand:hover { text-decoration: none; }
+  .brand svg { display: block; }
+  .navlinks { display: flex; align-items: center; gap: 18px; font-size: 14.5px; }
+  .navlinks a { color: var(--muted); }
+  .navlinks a:hover { color: var(--ink); text-decoration: none; }
+  .star {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 12px; border: 1px solid var(--line); border-radius: 999px;
+    color: var(--ink) !important; font-size: 13.5px; font-weight: 600;
+    background: var(--raised);
+  }
+  .star:hover { border-color: var(--accent); text-decoration: none; }
+  .star .count {
+    padding: 0 7px; border-radius: 999px; font-size: 12px;
+    background: var(--line-soft); color: var(--muted);
+  }
+  .star svg { color: var(--amber); }
+
+  /* ---------- hero ---------- */
+  .hero { position: relative; padding: clamp(56px, 9vw, 110px) 0 26px; overflow: hidden; }
+  @media (prefers-color-scheme: dark) {
+    .hero::before {
+      content: ""; position: absolute; inset: 0; pointer-events: none;
+      background-image:
+        radial-gradient(1px 1px at 12% 22%, rgba(231,236,245,0.7), transparent 60%),
+        radial-gradient(1px 1px at 31% 64%, rgba(231,236,245,0.45), transparent 60%),
+        radial-gradient(1.5px 1.5px at 53% 18%, rgba(125,211,252,0.65), transparent 60%),
+        radial-gradient(1px 1px at 68% 50%, rgba(231,236,245,0.5), transparent 60%),
+        radial-gradient(1px 1px at 83% 27%, rgba(231,236,245,0.6), transparent 60%),
+        radial-gradient(1.5px 1.5px at 91% 70%, rgba(251,191,36,0.5), transparent 60%),
+        radial-gradient(1px 1px at 44% 86%, rgba(231,236,245,0.35), transparent 60%);
     }
-    .mark {
-      display: inline-flex;
-      align-items: center;
-      gap: 12px;
-      font-weight: 800;
-      letter-spacing: 0;
-    }
-    .mark span:first-child {
-      width: 36px;
-      height: 36px;
-      border-radius: 10px;
-      display: inline-grid;
-      place-items: center;
-      color: #12343b;
-      background: #fffaf0;
-      box-shadow: inset 0 -4px 0 rgba(18, 52, 59, 0.14);
-    }
-    h1 {
-      max-width: 800px;
-      margin: 26px 0 10px;
-      font-size: clamp(42px, 7vw, 82px);
-      line-height: 0.95;
-      letter-spacing: 0;
-    }
-    header p {
-      max-width: 680px;
-      margin: 0;
-      font-size: 18px;
-      line-height: 1.55;
-      color: rgba(255, 250, 240, 0.86);
-    }
-    main {
-      width: min(100%, 1040px);
-      margin: 0 auto;
-      padding: 34px 20px 60px;
-    }
-    .toolbar {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 16px;
-      margin-bottom: 18px;
-    }
-    h2 {
-      margin: 0;
-      font-size: 20px;
-      letter-spacing: 0;
-    }
-    code {
-      padding: 3px 7px;
-      border-radius: 5px;
-      background: rgba(18, 52, 59, 0.08);
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-      gap: 12px;
-    }
-    .site {
-      display: block;
-      min-height: 124px;
-      padding: 16px;
-      border: 1px solid rgba(18, 52, 59, 0.14);
-      border-radius: 8px;
-      color: inherit;
-      background: rgba(255, 255, 255, 0.62);
-      text-decoration: none;
-    }
-    .site:hover {
-      border-color: rgba(45, 106, 79, 0.55);
-      box-shadow: 0 8px 20px rgba(18, 52, 59, 0.10);
-    }
-    .site strong {
-      display: block;
-      margin-bottom: 18px;
-      font-size: 18px;
-    }
-    .meta {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      color: #5b6770;
-      font-size: 13px;
-    }
-    .empty {
-      padding: 28px;
-      border: 1px dashed rgba(18, 52, 59, 0.25);
-      border-radius: 8px;
-      background: rgba(255, 255, 255, 0.45);
-      color: #46535d;
-    }
-    @media (prefers-color-scheme: dark) {
-      body { background: #101820; color: #eef3f3; }
-      .site { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.12); }
-      .meta, .empty { color: #b7c4c9; }
-      code { background: rgba(255, 255, 255, 0.10); }
-    }
-  </style>
+  }
+  .kicker {
+    margin: 0 0 14px; font-size: 12.5px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--amber); font-weight: 600;
+  }
+  h1 {
+    margin: 0 0 16px; font-size: clamp(40px, 7.5vw, 76px);
+    line-height: 1.02; letter-spacing: -0.025em; font-weight: 800;
+  }
+  h1 em { font-style: normal; color: var(--accent); }
+  .lede { max-width: 640px; margin: 0 0 26px; font-size: 18px; color: var(--muted); }
+  .lede strong { color: var(--ink); font-weight: 600; }
+  .ctas { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 40px; }
+  .btn {
+    display: inline-block; padding: 10px 20px; border-radius: 8px;
+    font-weight: 650; font-size: 15px; border: 1px solid transparent;
+  }
+  .btn:hover { text-decoration: none; }
+  .btn-primary { background: var(--ink); color: var(--bg); }
+  .btn-primary:hover { background: var(--accent); color: var(--term-bg); }
+  .btn-ghost { border-color: var(--line); color: var(--ink); }
+  .btn-ghost:hover { border-color: var(--accent); }
+
+  .facts {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 10px; list-style: none; margin: 0; padding: 0;
+  }
+  .facts li {
+    border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+    background: var(--raised);
+  }
+  .facts b {
+    display: block; font-size: 11.5px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 5px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .facts span { font-size: 14px; color: var(--muted); }
+  .facts code { font-size: 12.5px; }
+
+  /* ---------- sections ---------- */
+  .section { padding: 54px 0 10px; }
+  .sec-kicker {
+    margin: 0 0 6px; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--amber); font-weight: 600;
+  }
+  h2 { margin: 0 0 22px; font-size: clamp(26px, 4vw, 34px); letter-spacing: -0.02em; }
+  h3 { margin: 34px 0 10px; font-size: 19px; letter-spacing: -0.01em; }
+  .section p { color: var(--muted); max-width: 680px; }
+  .section p strong, .section li strong { color: var(--ink); }
+  code {
+    padding: 2px 6px; border-radius: 5px; font-size: 0.88em;
+    background: var(--line-soft); color: var(--ink);
+  }
+
+  /* ---------- terminal / command blocks ---------- */
+  .cmd, .codeblock {
+    position: relative; border-radius: 10px; border: 1px solid var(--term-line);
+    background: var(--term-bg); color: var(--term-ink);
+    margin: 10px 0;
+  }
+  .cmd { display: flex; align-items: center; gap: 10px; padding: 12px 14px; }
+  .cmd .p { color: var(--term-sky); user-select: none; flex: none; }
+  .cmd code, .codeblock code {
+    background: none; color: inherit; padding: 0; font-size: 13.5px;
+  }
+  .cmd code { overflow-x: auto; white-space: pre; flex: 1; min-width: 0; padding: 2px 0; }
+  .codeblock pre { margin: 0; padding: 16px 18px; overflow-x: auto; font-size: 13.5px; line-height: 1.6; }
+  .codeblock .cm { color: var(--term-muted); }
+  .codeblock .sky { color: var(--term-sky); }
+  .copy {
+    flex: none; padding: 3px 10px; border-radius: 6px; cursor: pointer;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11.5px;
+    color: var(--term-muted); background: transparent; border: 1px solid var(--term-line);
+  }
+  .codeblock .copy { position: absolute; top: 10px; right: 10px; background: var(--term-bg); }
+  .copy:hover { color: var(--term-sky); border-color: var(--term-sky); }
+  .copy.ok { color: var(--term-amber); border-color: var(--term-amber); }
+  .copy:focus-visible, .btn:focus-visible, a:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+
+  ol.steps { list-style: none; counter-reset: step; margin: 0; padding: 0; }
+  ol.steps > li { counter-increment: step; position: relative; padding: 0 0 26px 52px; }
+  ol.steps > li::before {
+    content: counter(step);
+    position: absolute; left: 0; top: 0;
+    width: 34px; height: 34px; display: grid; place-items: center;
+    border: 1px solid var(--line); border-radius: 50%;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 14px; font-weight: 700; color: var(--accent); background: var(--raised);
+  }
+  ol.steps > li:not(:last-child)::after {
+    content: ""; position: absolute; left: 17px; top: 40px; bottom: 4px;
+    border-left: 1px dashed var(--line);
+  }
+  ol.steps h3 { margin: 4px 0 6px; font-size: 17px; }
+  ol.steps p { margin: 6px 0 0; font-size: 14.5px; }
+
+  .cmdlist { border: 1px solid var(--term-line); border-radius: 10px; overflow: hidden; margin: 12px 0; }
+  .cmdlist .cmd { border: 0; border-radius: 0; margin: 0; }
+  .cmdlist .cmd + .cmd { border-top: 1px solid var(--term-line); }
+  .cmd .note { flex: none; font-size: 12px; color: var(--term-muted); display: none; }
+  @media (min-width: 720px) { .cmd .note { display: block; } }
+
+  /* ---------- live pods ---------- */
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 14px;
+  }
+  .card {
+    display: block; padding: 18px; min-width: 0;
+    border: 1px solid var(--line); border-radius: 12px;
+    background: var(--raised); color: inherit;
+    transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+  }
+  .card:hover {
+    transform: translateY(-2px); border-color: var(--accent);
+    box-shadow: var(--shadow); text-decoration: none;
+  }
+  .card strong {
+    display: block; font-size: 17px; font-weight: 700; overflow-wrap: anywhere;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .card .card-url {
+    display: block; margin: 3px 0 16px; font-size: 12.5px; color: var(--accent);
+    overflow-wrap: anywhere;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .card .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; color: var(--muted); }
+  .count-pill {
+    display: inline-block; margin-left: 8px; padding: 1px 10px; border-radius: 999px;
+    font-size: 13px; vertical-align: 4px; color: var(--muted);
+    border: 1px solid var(--line); background: var(--raised);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .empty {
+    padding: 34px 26px; border: 1px dashed var(--line); border-radius: 12px;
+    background: var(--raised); color: var(--muted); font-size: 15px;
+  }
+  .empty .mono { color: var(--ink); }
+
+  /* ---------- docs ---------- */
+  .api-table { width: 100%; border-collapse: collapse; margin: 10px 0 6px; font-size: 13.5px; }
+  .api-table caption {
+    text-align: left; padding-bottom: 8px; font-size: 12px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--amber); font-weight: 650;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .api-table th {
+    text-align: left; padding: 7px 14px 7px 0; font-size: 11px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--muted); font-weight: 600;
+    border-bottom: 1px solid var(--line);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .api-table td {
+    padding: 9px 14px 9px 0; border-bottom: 1px solid var(--line-soft);
+    vertical-align: top; color: var(--muted);
+  }
+  .api-table td:first-child { white-space: nowrap; }
+  .api-table td code { white-space: nowrap; }
+  @media (max-width: 640px) {
+    .api-table td:first-child, .api-table td code { white-space: normal; overflow-wrap: anywhere; }
+  }
+  .badge {
+    display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px;
+    font-weight: 650; letter-spacing: 0.04em;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .b-pub { color: var(--ok); border: 1px solid currentColor; }
+  .b-auth { color: var(--amber); border: 1px solid currentColor; }
+  .doc-cols { display: grid; gap: 0 36px; grid-template-columns: 1fr; }
+  @media (min-width: 860px) { .doc-cols { grid-template-columns: 1fr 1fr; } }
+  .linklist { margin: 8px 0 0; padding: 0; list-style: none; }
+  .linklist li { padding: 7px 0; border-bottom: 1px solid var(--line-soft); font-size: 14.5px; }
+  .linklist .mono { color: var(--muted); font-size: 12.5px; }
+
+  /* ---------- footer ---------- */
+  footer {
+    margin-top: 70px; padding: 34px 0 44px;
+    border-top: 1px solid var(--line-soft); text-align: center;
+  }
+  footer .hal { margin: 0 0 12px; color: var(--muted); font-size: 13.5px; font-style: italic; }
+  footer nav { display: flex; gap: 20px; justify-content: center; font-size: 13.5px; flex-wrap: wrap; }
+</style>
 </head>
 <body>
-  <header>
-    <div class="mark"><span>hp</span><span>Happy Pods</span></div>
-    <h1>Deploy a folder. Get a URL.</h1>
-    <p>Static sites live at <code>&lt;name&gt;.&lt;team&gt;.&lt;base&gt;</code>. Site APIs are same-origin under <code>/api/</code> and scoped by subdomain.</p>
-  </header>
-  <main>
-    <div class="toolbar">
-      <h2>Live pods</h2>
-      <code>pods deploy ./site --name demo --team public</code>
-    </div>
-    {{if .Sites}}
-    <div class="grid">
-      {{range .Sites}}
-      <a class="site" href="/sites/{{.Team}}/{{.Name}}/">
-        <strong>{{.Name}}.{{.Team}}</strong>
-        <span class="meta"><span>{{.Files}} files</span><span>{{.Bytes}} bytes</span></span>
+<a class="skip" href="#quickstart">Skip to quick start</a>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
+        <circle cx="12" cy="12" r="4" fill="var(--accent)"/>
+      </svg>
+      Happy Pods
+    </a>
+    <nav class="navlinks" aria-label="Site">
+      <a href="#quickstart">Quick start</a>
+      <a href="#pods">Live pods</a>
+      <a href="#docs">Docs</a>
+      <a class="star" href="{{.RepoURL}}" target="_blank" rel="noopener">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <path d="M8 .25a.75.75 0 0 1 .67.42l1.88 3.8 4.2.61a.75.75 0 0 1 .42 1.28l-3.04 2.97.72 4.18a.75.75 0 0 1-1.09.79L8 12.35l-3.76 1.97a.75.75 0 0 1-1.09-.79l.72-4.18L.83 6.36a.75.75 0 0 1 .42-1.28l4.2-.61L7.33.67A.75.75 0 0 1 8 .25Z"/>
+        </svg>
+        <span>Star on GitHub</span>
+        <span class="count" id="star-count" hidden></span>
       </a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="wrap">
+      <p class="kicker mono">podbay.dev &mdash; static hosting with a database in the trunk</p>
+      <h1>Deploy a folder,<br>get a <em>URL</em>.</h1>
+      <p class="lede">
+        Point the <strong>pods</strong> CLI at a directory and it&rsquo;s live at
+        <code>&lt;name&gt;.podbay.dev</code>. Every site also gets its own JSON document store
+        with a REST API &mdash; so your &ldquo;static&rdquo; site can have a guestbook, a poll,
+        or a leaderboard without a backend.
+      </p>
+      <div class="ctas">
+        <a class="btn btn-primary" href="#quickstart">Deploy in 3 commands</a>
+        <a class="btn btn-ghost" href="#docs">Read the docs</a>
+      </div>
+      <ul class="facts">
+        <li><b>Hosting</b><span>Static files served at <code>&lt;name&gt;.podbay.dev</code>. All sites are public.</span></li>
+        <li><b>Database</b><span>A JSON store per site &mdash; a dedicated SQLite DB &mdash; with a REST API and a zero-dependency browser client at <code>/pods.js</code>.</span></li>
+        <li><b>Identity</b><span>Publishing requires GitHub sign-in. Every site is owned by the GitHub account that deployed it.</span></li>
+        <li><b>Tokens</b><span>One JWT API token that auto-refreshes. No token juggling.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="quickstart" class="section">
+    <div class="wrap">
+      <p class="sec-kicker mono">01 / launch sequence</p>
+      <h2>Quick start</h2>
+      <ol class="steps">
+        <li>
+          <h3>Install the CLI</h3>
+          <div class="cmd">
+            <span class="p" aria-hidden="true">$</span>
+            <code>go install github.com/slopus/pods/cmd/pods@latest</code>
+            <button class="copy" type="button" aria-label="Copy install command">copy</button>
+          </div>
+          <p>Or build from source:</p>
+          <div class="cmd">
+            <span class="p" aria-hidden="true">$</span>
+            <code>git clone https://github.com/slopus/pods &amp;&amp; make build</code>
+            <button class="copy" type="button" aria-label="Copy clone-and-build command">copy</button>
+          </div>
+        </li>
+        <li>
+          <h3>Sign in with GitHub</h3>
+          <div class="cmd">
+            <span class="p" aria-hidden="true">$</span>
+            <code>pods login --endpoint https://podbay.dev</code>
+            <button class="copy" type="button" aria-label="Copy login command">copy</button>
+          </div>
+          <p>Opens GitHub device login &mdash; you get a short code, authorize it in the browser, done.</p>
+        </li>
+        <li>
+          <h3>Create and deploy</h3>
+          <div class="cmd">
+            <span class="p" aria-hidden="true">$</span>
+            <code>pods init hello &amp;&amp; pods deploy hello</code>
+            <button class="copy" type="button" aria-label="Copy init and deploy command">copy</button>
+          </div>
+          <p>That&rsquo;s it. Your site is live at <a href="https://hello.podbay.dev" rel="noopener"><code>https://hello.podbay.dev</code></a>.</p>
+        </li>
+      </ol>
+
+      <h3>Then keep going</h3>
+      <div class="cmdlist">
+        <div class="cmd">
+          <span class="p" aria-hidden="true">$</span>
+          <code>pods list</code>
+          <span class="note mono"># every pod in the bay</span>
+          <button class="copy" type="button" aria-label="Copy pods list command">copy</button>
+        </div>
+        <div class="cmd">
+          <span class="p" aria-hidden="true">$</span>
+          <code>pods open hello</code>
+          <span class="note mono"># open it in your browser</span>
+          <button class="copy" type="button" aria-label="Copy pods open command">copy</button>
+        </div>
+        <div class="cmd">
+          <span class="p" aria-hidden="true">$</span>
+          <code>PODS_ENDPOINT=https://hello.podbay.dev pods db guestbook create '{"name":"hi"}'</code>
+          <span class="note mono"># the JSON store is per-site &mdash; point at the site host</span>
+          <button class="copy" type="button" aria-label="Copy pods db command">copy</button>
+        </div>
+        <div class="cmd">
+          <span class="p" aria-hidden="true">$</span>
+          <code>pods rm hello</code>
+          <span class="note mono"># gone</span>
+          <button class="copy" type="button" aria-label="Copy pods rm command">copy</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="pods" class="section">
+    <div class="wrap">
+      <p class="sec-kicker mono">02 / in orbit</p>
+      <h2>Live pods{{if .Sites}}<span class="count-pill">{{len .Sites}}</span>{{end}}</h2>
+      {{if .Sites}}
+      <div class="grid">
+        {{range .Sites}}
+        <a class="card" data-site="{{.Name}}" href="//{{.Name}}.{{$.BaseHost}}/">
+          <strong>{{.Name}}</strong>
+          <span class="card-url">{{.Name}}.{{$.BaseHost}}</span>
+          <span class="meta">
+            <span>by {{.OwnerLogin}}</span>
+            <span>{{.Files}} files</span>
+            <span data-bytes="{{.Bytes}}">{{.Bytes}} B</span>
+            <span>upd {{.UpdatedAt.Format "2006-01-02"}}</span>
+          </span>
+        </a>
+        {{end}}
+      </div>
+      {{else}}
+      <div class="empty">
+        The pod bay is empty. Be the first:
+        <code class="mono">pods init hello &amp;&amp; pods deploy hello</code>
+      </div>
       {{end}}
     </div>
-    {{else}}
-    <div class="empty">No pods deployed yet. Run <code>pods init demo</code>, then <code>pods deploy demo --team public</code>.</div>
-    {{end}}
-  </main>
+  </section>
+
+  <section id="docs" class="section">
+    <div class="wrap">
+      <p class="sec-kicker mono">03 / flight manual</p>
+      <h2>Docs</h2>
+
+      <h3>Auth model</h3>
+      <p>
+        <strong>Reading is public; publishing needs GitHub.</strong> Anyone can browse sites,
+        query document stores, and watch event streams. To deploy or delete a site you sign in
+        with GitHub: the CLI runs the GitHub device flow and stores a single JWT, which it
+        refreshes automatically before expiry via <code>POST /api/auth/refresh</code>.
+        Identity is provider-agnostic (user IDs are <code>provider:subject</code>) &mdash;
+        GitHub is the only provider today.
+      </p>
+
+      <h3>Global API <span class="mono" style="font-weight:400;color:var(--muted);font-size:0.7em">https://podbay.dev</span></h3>
+      <table class="api-table">
+        <caption>Auth &amp; identity</caption>
+        <thead><tr><th scope="col">Endpoint</th><th scope="col">Does</th><th scope="col">Access</th></tr></thead>
+        <tbody>
+          <tr><td><code>GET /api/me</code></td><td>Current user, or <code>&#123;authenticated:false&#125;</code> when anonymous (send a bearer JWT or session to identify)</td><td><span class="badge b-pub">public</span></td></tr>
+          <tr><td><code>POST /api/auth/github/device/start</code></td><td>Start device login &rarr; <code>&#123;device_code, user_code, verification_uri, expires_in, interval&#125;</code></td><td><span class="badge b-pub">public</span></td></tr>
+          <tr><td><code>POST /api/auth/github/device/poll</code></td><td>Body <code>&#123;device_code&#125;</code> &rarr; <code>&#123;token, user&#125;</code> &mdash; the token is your JWT</td><td><span class="badge b-pub">public</span></td></tr>
+          <tr><td><code>POST /api/auth/refresh</code></td><td>Trade a still-valid bearer JWT for a fresh <code>&#123;token, user&#125;</code></td><td><span class="badge b-auth">auth</span></td></tr>
+          <tr><td><code>GET /api/auth/login/github</code></td><td>Browser OAuth login</td><td><span class="badge b-pub">public</span></td></tr>
+        </tbody>
+      </table>
+
+      <table class="api-table">
+        <caption>Sites &amp; events</caption>
+        <thead><tr><th scope="col">Endpoint</th><th scope="col">Does</th><th scope="col">Access</th></tr></thead>
+        <tbody>
+          <tr><td><code>GET /healthz</code></td><td>Liveness check &rarr; <code>&#123;"ok":true&#125;</code></td><td><span class="badge b-pub">public</span></td></tr>
+          <tr><td><code>GET /api/sites</code></td><td>List all sites</td><td><span class="badge b-pub">public</span></td></tr>
+          <tr><td><code>PUT /api/sites/&#123;name&#125;</code></td><td>Deploy a site &mdash; body is a <code>tar.gz</code>; name is DNS-label style</td><td><span class="badge b-auth">auth</span></td></tr>
+          <tr><td><code>DELETE /api/sites/&#123;name&#125;</code></td><td>Delete your site (owner only)</td><td><span class="badge b-auth">auth</span></td></tr>
+          <tr><td><code>GET /api/events</code></td><td>SSE stream of all site/doc changes</td><td><span class="badge b-pub">public</span></td></tr>
+        </tbody>
+      </table>
+
+      <h3>Site API <span class="mono" style="font-weight:400;color:var(--muted);font-size:0.7em">https://&lt;site&gt;.podbay.dev</span></h3>
+      <p>Every deployed site serves this, same-origin, no setup:</p>
+      <table class="api-table">
+        <caption>Static files, documents, events</caption>
+        <thead><tr><th scope="col">Endpoint</th><th scope="col">Does</th><th scope="col">Access</th></tr></thead>
+        <tbody>
+          <tr><td><code>GET /</code></td><td>Your static files</td><td><span class="badge b-pub">public</span></td></tr>
+          <tr><td><code>GET /api/db</code></td><td>List collections</td><td><span class="badge b-pub">public</span></td></tr>
+          <tr><td><code>GET /api/db/&#123;coll&#125;</code></td><td>Query docs &mdash; <code>?where=f=v&amp;sort=-f&amp;limit=n&amp;offset=n</code></td><td><span class="badge b-pub">public</span></td></tr>
+          <tr><td><code>POST /api/db/&#123;coll&#125;</code></td><td>Create doc; server sets <code>id</code>/<code>created_at</code>/<code>updated_at</code></td><td><span class="badge b-pub">public</span></td></tr>
+          <tr><td><code>GET/PUT/PATCH/DELETE /api/db/&#123;coll&#125;/&#123;id&#125;</code></td><td>Get / replace / merge / delete a doc</td><td><span class="badge b-pub">public</span></td></tr>
+          <tr><td><code>DELETE /api/db/&#123;coll&#125;</code></td><td>Drop the collection</td><td><span class="badge b-pub">public</span></td></tr>
+          <tr><td><code>GET /api/events</code></td><td>SSE stream scoped to this site</td><td><span class="badge b-pub">public</span></td></tr>
+          <tr><td><code>GET /pods.js</code></td><td>Zero-dependency browser client</td><td><span class="badge b-pub">public</span></td></tr>
+        </tbody>
+      </table>
+
+      <div class="doc-cols">
+        <div>
+          <h3>Browser client</h3>
+          <p>Drop one script tag in any page on your pod &mdash; no build step, no npm:</p>
+          <div class="codeblock">
+            <button class="copy" type="button" aria-label="Copy browser client example">copy</button>
+            <pre><code><span class="cm">&lt;script src="/pods.js"&gt;&lt;/script&gt;</span>
+<span class="cm">&lt;script type="module"&gt;</span>
+  <span class="sky">const</span> pods = Pods();
+  <span class="sky">const</span> posts = pods.db.collection(<span class="sky">"posts"</span>);
+  <span class="sky">await</span> posts.create(&#123; title: <span class="sky">"hi"</span> &#125;);
+  <span class="sky">const</span> &#123; docs &#125; = <span class="sky">await</span> posts.query(&#123; sort: <span class="sky">"-created_at"</span>, limit: 10 &#125;);
+<span class="cm">&lt;/script&gt;</span></code></pre>
+          </div>
+        </div>
+        <div>
+          <h3>Deploy with curl</h3>
+          <p>No CLI required &mdash; the deploy endpoint takes a plain <code>tar.gz</code>:</p>
+          <div class="codeblock">
+            <button class="copy" type="button" aria-label="Copy curl deploy example">copy</button>
+            <pre><code>tar -czf - -C ./site . | curl -X PUT --data-binary @- \
+  -H <span class="sky">"Authorization: Bearer $TOKEN"</span> \
+  https://podbay.dev/api/sites/hello</code></pre>
+          </div>
+        </div>
+      </div>
+
+      <h3>For AI agents</h3>
+      <p>
+        The repo ships a Claude / agent skill at
+        <a href="{{.RepoURL}}/blob/main/skills/pods/SKILL.md" rel="noopener"><code>skills/pods/SKILL.md</code></a>
+        that teaches an AI agent to drive the <code>pods</code> CLI end to end &mdash;
+        log in, deploy, and work the document store on your behalf.
+      </p>
+
+      <h3>Links</h3>
+      <ul class="linklist">
+        <li><a href="{{.RepoURL}}" rel="noopener">Source on GitHub</a> <span class="mono">&mdash; slopus/pods</span></li>
+        <li><a href="{{.RepoURL}}/issues" rel="noopener">Issues &amp; ideas</a> <span class="mono">&mdash; bugs, requests, questions</span></li>
+        <li><a href="https://shopify.engineering/quick" rel="noopener">Shopify&rsquo;s Quick</a> <span class="mono">&mdash; the engineering write-up that inspired this</span></li>
+      </ul>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p class="hal mono">&ldquo;Open the pod bay doors.&rdquo; &mdash; gladly. That&rsquo;s the whole product.</p>
+    <nav aria-label="Footer">
+      <a href="{{.RepoURL}}" rel="noopener">GitHub</a>
+      <a href="{{.RepoURL}}/issues" rel="noopener">Issues</a>
+      <a href="#docs">Docs</a>
+      <a href="https://podbay.dev">podbay.dev</a>
+    </nav>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  // Point each pod card at its subdomain; the template can't know the base host.
+  var cards = document.querySelectorAll("[data-site]");
+  for (var i = 0; i < cards.length; i++) {
+    var a = cards[i];
+    var site = a.getAttribute("data-site");
+    if (!site) continue;
+    a.href = location.protocol + "//" + site + "." + location.host + "/";
+    var u = a.querySelector(".card-url");
+    if (u) u.textContent = site + "." + location.host;
+  }
+
+  // Human-readable sizes from raw byte counts.
+  var UNITS = ["B", "KiB", "MiB", "GiB", "TiB"];
+  var sized = document.querySelectorAll("[data-bytes]");
+  for (var j = 0; j < sized.length; j++) {
+    var el = sized[j];
+    var n = Number(el.getAttribute("data-bytes"));
+    if (!isFinite(n) || n < 0) continue;
+    var k = 0;
+    while (n >= 1024 && k < UNITS.length - 1) { n /= 1024; k++; }
+    el.textContent = (k === 0 ? String(n) : n.toFixed(1)) + " " + UNITS[k];
+  }
+
+  // Copy buttons with clipboard API + execCommand fallback.
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (e) { /* best effort */ }
+    document.body.removeChild(ta);
+  }
+  function flash(btn) {
+    btn.classList.add("ok");
+    btn.textContent = "copied";
+    setTimeout(function () {
+      btn.classList.remove("ok");
+      btn.textContent = "copy";
+    }, 1300);
+  }
+  var buttons = document.querySelectorAll("button.copy");
+  for (var b = 0; b < buttons.length; b++) {
+    (function (btn) {
+      btn.addEventListener("click", function () {
+        var scope = btn.closest(".cmd, .codeblock");
+        var code = scope ? scope.querySelector("code") : null;
+        if (!code) return;
+        var text = code.textContent.replace(/\s+$/, "");
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(
+            function () { flash(btn); },
+            function () { fallbackCopy(text); flash(btn); }
+          );
+        } else {
+          fallbackCopy(text);
+          flash(btn);
+        }
+      });
+    })(buttons[b]);
+  }
+
+  // GitHub star count — best effort, never blocks rendering, degrades to
+  // a plain "Star on GitHub" link if the repo is unreachable (e.g. private).
+  var countEl = document.getElementById("star-count");
+  if (countEl && window.fetch) {
+    fetch("https://api.github.com/repos/slopus/pods")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d) return;
+        var stars = typeof d.stargazers_count === "number" ? d.stargazers_count : d.stargazer_count;
+        if (typeof stars !== "number") return;
+        countEl.textContent = stars >= 1000 ? (stars / 1000).toFixed(1) + "k" : String(stars);
+        countEl.hidden = false;
+      })
+      .catch(function () { /* stay starless */ });
+  }
+})();
+</script>
 </body>
 </html>

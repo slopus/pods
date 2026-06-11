@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -14,18 +15,16 @@ import (
 
 // GET /api/db
 func (s *Server) handleCollections(w http.ResponseWriter, r *http.Request) {
-	team, site, key, ok := s.requestSiteTenant(w, r, roleReader)
+	site, ok := s.requestSite(w, r)
 	if !ok {
 		return
 	}
-	_ = team
-	_ = site
-	writeJSON(w, http.StatusOK, api.CollectionList{Collections: s.store.Collections(key)})
+	writeJSON(w, http.StatusOK, api.CollectionList{Collections: s.store.Collections(site)})
 }
 
 // GET /api/db/{coll}
 func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
-	_, _, key, ok := s.requestSiteTenant(w, r, roleReader)
+	site, ok := s.requestSite(w, r)
 	if !ok {
 		return
 	}
@@ -38,12 +37,12 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		respondErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.store.Query(key, coll, q))
+	writeJSON(w, http.StatusOK, s.store.Query(site, coll, q))
 }
 
 // POST /api/db/{coll}
 func (s *Server) handleDocCreate(w http.ResponseWriter, r *http.Request) {
-	team, site, key, ok := s.requestSiteTenant(w, r, rolePublisher)
+	site, ok := s.requestSite(w, r)
 	if !ok {
 		return
 	}
@@ -56,7 +55,7 @@ func (s *Server) handleDocCreate(w http.ResponseWriter, r *http.Request) {
 		respondErr(w, err)
 		return
 	}
-	created, err := s.store.Create(key, coll, doc)
+	created, err := s.store.Create(site, coll, doc)
 	if err != nil {
 		respondErr(w, err)
 		return
@@ -64,7 +63,6 @@ func (s *Server) handleDocCreate(w http.ResponseWriter, r *http.Request) {
 	id, _ := created["id"].(string)
 	s.publish(api.UpdateEvent{
 		Pod:        site,
-		Team:       team,
 		Type:       "doc.created",
 		Collection: coll,
 		DocumentID: id,
@@ -75,11 +73,11 @@ func (s *Server) handleDocCreate(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/db/{coll}/{id}
 func (s *Server) handleDocGet(w http.ResponseWriter, r *http.Request) {
-	_, _, key, coll, id, ok := s.validDocPath(w, r, roleReader)
+	site, coll, id, ok := s.validDocPath(w, r)
 	if !ok {
 		return
 	}
-	doc, found := s.store.Get(key, coll, id)
+	doc, found := s.store.Get(site, coll, id)
 	if !found {
 		writeError(w, http.StatusNotFound, "document %q not found", id)
 		return
@@ -89,7 +87,7 @@ func (s *Server) handleDocGet(w http.ResponseWriter, r *http.Request) {
 
 // PUT /api/db/{coll}/{id}
 func (s *Server) handleDocSet(w http.ResponseWriter, r *http.Request) {
-	team, site, key, coll, id, ok := s.validDocPath(w, r, rolePublisher)
+	site, coll, id, ok := s.validDocPath(w, r)
 	if !ok {
 		return
 	}
@@ -98,14 +96,13 @@ func (s *Server) handleDocSet(w http.ResponseWriter, r *http.Request) {
 		respondErr(w, err)
 		return
 	}
-	set, err := s.store.Set(key, coll, id, doc)
+	set, err := s.store.Set(site, coll, id, doc)
 	if err != nil {
 		respondErr(w, err)
 		return
 	}
 	s.publish(api.UpdateEvent{
 		Pod:        site,
-		Team:       team,
 		Type:       "doc.set",
 		Collection: coll,
 		DocumentID: id,
@@ -116,7 +113,7 @@ func (s *Server) handleDocSet(w http.ResponseWriter, r *http.Request) {
 
 // PATCH /api/db/{coll}/{id}
 func (s *Server) handleDocPatch(w http.ResponseWriter, r *http.Request) {
-	team, site, key, coll, id, ok := s.validDocPath(w, r, rolePublisher)
+	site, coll, id, ok := s.validDocPath(w, r)
 	if !ok {
 		return
 	}
@@ -125,7 +122,7 @@ func (s *Server) handleDocPatch(w http.ResponseWriter, r *http.Request) {
 		respondErr(w, err)
 		return
 	}
-	patched, found, err := s.store.Patch(key, coll, id, doc)
+	patched, found, err := s.store.Patch(site, coll, id, doc)
 	if err != nil {
 		respondErr(w, err)
 		return
@@ -136,7 +133,6 @@ func (s *Server) handleDocPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publish(api.UpdateEvent{
 		Pod:        site,
-		Team:       team,
 		Type:       "doc.patched",
 		Collection: coll,
 		DocumentID: id,
@@ -147,11 +143,11 @@ func (s *Server) handleDocPatch(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /api/db/{coll}/{id}
 func (s *Server) handleDocDelete(w http.ResponseWriter, r *http.Request) {
-	team, site, key, coll, id, ok := s.validDocPath(w, r, rolePublisher)
+	site, coll, id, ok := s.validDocPath(w, r)
 	if !ok {
 		return
 	}
-	deleted, err := s.store.Delete(key, coll, id)
+	deleted, err := s.store.Delete(site, coll, id)
 	if err != nil {
 		respondErr(w, err)
 		return
@@ -162,7 +158,6 @@ func (s *Server) handleDocDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publish(api.UpdateEvent{
 		Pod:        site,
-		Team:       team,
 		Type:       "doc.deleted",
 		Collection: coll,
 		DocumentID: id,
@@ -172,7 +167,7 @@ func (s *Server) handleDocDelete(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /api/db/{coll}
 func (s *Server) handleCollectionDrop(w http.ResponseWriter, r *http.Request) {
-	team, site, key, ok := s.requestSiteTenant(w, r, rolePublisher)
+	site, ok := s.requestSite(w, r)
 	if !ok {
 		return
 	}
@@ -180,7 +175,7 @@ func (s *Server) handleCollectionDrop(w http.ResponseWriter, r *http.Request) {
 	if !validName(w, "collection", coll) {
 		return
 	}
-	dropped, err := s.store.Drop(key, coll)
+	dropped, err := s.store.Drop(site, coll)
 	if err != nil {
 		respondErr(w, err)
 		return
@@ -191,36 +186,39 @@ func (s *Server) handleCollectionDrop(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publish(api.UpdateEvent{
 		Pod:        site,
-		Team:       team,
 		Type:       "collection.dropped",
 		Collection: coll,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) validDocPath(w http.ResponseWriter, r *http.Request, role int) (team, site, key, coll, id string, ok bool) {
-	team, site, key, ok = s.requestSiteTenant(w, r, role)
+func (s *Server) validDocPath(w http.ResponseWriter, r *http.Request) (site, coll, id string, ok bool) {
+	site, ok = s.requestSite(w, r)
 	if !ok {
-		return "", "", "", "", "", false
+		return "", "", "", false
 	}
 	coll = r.PathValue("coll")
 	id = r.PathValue("id")
 	if !validName(w, "collection", coll) || !validName(w, "document id", id) {
-		return "", "", "", "", "", false
+		return "", "", "", false
 	}
-	return team, site, key, coll, id, true
+	return site, coll, id, true
 }
 
-func (s *Server) requestSiteTenant(w http.ResponseWriter, r *http.Request, role int) (team, site, key string, ok bool) {
-	team, site, ok = s.siteFromHost(r.Host)
+// requestSite resolves the site database API tenant from the request host
+// and requires that site to actually be deployed, so stray subdomains can
+// never create database files.
+func (s *Server) requestSite(w http.ResponseWriter, r *http.Request) (site string, ok bool) {
+	site, ok = s.siteFromHost(r.Host)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "site API requires a <site>.<team> host")
-		return "", "", "", false
+		writeError(w, http.StatusBadRequest, "site API requires a <site> subdomain host")
+		return "", false
 	}
-	if _, ok := s.requireTeamRole(w, r, team, role); !ok {
-		return "", "", "", false
+	if info, err := os.Stat(s.siteDir(site)); err != nil || !info.IsDir() {
+		writeError(w, http.StatusNotFound, "site %q not found", site)
+		return "", false
 	}
-	return team, site, tenantKey(team, site), true
+	return site, true
 }
 
 func validName(w http.ResponseWriter, kind, value string) bool {

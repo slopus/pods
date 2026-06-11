@@ -47,18 +47,18 @@ func New(endpoint, secret string) *Client {
 // Endpoint returns the normalized endpoint the client talks to.
 func (c *Client) Endpoint() string { return c.endpoint }
 
-// SiteURL returns the fallback path URL of a deployed public-team site.
+// SiteURL returns the fallback path URL of a deployed site.
 func (c *Client) SiteURL(name string) string {
 	return c.endpoint + "/sites/" + url.PathEscape(name) + "/"
 }
 
-// TeamSiteURL returns the subdomain URL for team/name under the client's endpoint host.
-func (c *Client) TeamSiteURL(team, name string) string {
+// SubdomainSiteURL returns the subdomain URL for name under the client's endpoint host.
+func (c *Client) SubdomainSiteURL(name string) string {
 	base, err := url.Parse(c.endpoint)
 	if err != nil {
-		return c.endpoint + "/sites/" + url.PathEscape(team) + "/" + url.PathEscape(name) + "/"
+		return c.SiteURL(name)
 	}
-	base.Host = name + "." + team + "." + base.Host
+	base.Host = name + "." + base.Host
 	base.Path = "/"
 	base.RawQuery = ""
 	base.Fragment = ""
@@ -79,6 +79,36 @@ func (c *Client) Me(ctx context.Context) (api.Me, error) {
 	return out, err
 }
 
+// GitHubDeviceStart starts GitHub OAuth device authentication.
+func (c *Client) GitHubDeviceStart(ctx context.Context) (api.GitHubDeviceStart, error) {
+	var out api.GitHubDeviceStart
+	err := c.do(ctx, http.MethodPost, "/api/auth/github/device/start", nil, nil, "", &out)
+	return out, err
+}
+
+// GitHubDevicePoll polls GitHub OAuth device authentication.
+func (c *Client) GitHubDevicePoll(ctx context.Context, deviceCode string) (api.GitHubDeviceToken, error) {
+	var out api.GitHubDeviceToken
+	err := c.doJSON(ctx, http.MethodPost, "/api/auth/github/device/poll", api.GitHubDevicePoll{DeviceCode: deviceCode}, &out)
+	return out, err
+}
+
+// Refresh calls POST /api/auth/refresh, exchanging the client's current API
+// token for a fresh one. The new token replaces the old one on the client.
+func (c *Client) Refresh(ctx context.Context) (api.TokenResponse, error) {
+	var out api.TokenResponse
+	if err := c.do(ctx, http.MethodPost, "/api/auth/refresh", nil, nil, "", &out); err != nil {
+		return out, err
+	}
+	if out.Token != "" {
+		c.secret = out.Token
+	}
+	return out, nil
+}
+
+// Token returns the API token the client currently sends.
+func (c *Client) Token() string { return c.secret }
+
 // Sites calls GET /api/sites and returns the deployed sites.
 func (c *Client) Sites(ctx context.Context) ([]api.Site, error) {
 	var out api.SiteList
@@ -88,23 +118,17 @@ func (c *Client) Sites(ctx context.Context) ([]api.Site, error) {
 	return out.Sites, nil
 }
 
-// Deploy uploads a tar.gz archive as the new content of team/name.
-func (c *Client) Deploy(ctx context.Context, team, name string, archive io.Reader) (api.DeployResult, error) {
+// Deploy uploads a tar.gz archive as the new content of name.
+func (c *Client) Deploy(ctx context.Context, name string, archive io.Reader) (api.DeployResult, error) {
 	var out api.DeployResult
 	path := "/api/sites/" + url.PathEscape(name)
-	if team != "" && team != "public" {
-		path = "/api/teams/" + url.PathEscape(team) + "/sites/" + url.PathEscape(name)
-	}
 	err := c.do(ctx, http.MethodPut, path, nil, archive, "application/gzip", &out)
 	return out, err
 }
 
-// DeleteSite calls DELETE for team/name.
-func (c *Client) DeleteSite(ctx context.Context, team, name string) error {
+// DeleteSite calls DELETE for name.
+func (c *Client) DeleteSite(ctx context.Context, name string) error {
 	path := "/api/sites/" + url.PathEscape(name)
-	if team != "" && team != "public" {
-		path = "/api/teams/" + url.PathEscape(team) + "/sites/" + url.PathEscape(name)
-	}
 	return c.do(ctx, http.MethodDelete, path, nil, nil, "", nil)
 }
 

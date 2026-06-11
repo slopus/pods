@@ -36,6 +36,10 @@ func run(args []string) error {
 	secretFlag := fs.String("secret", os.Getenv("PODBAY_SECRET"), "bootstrap admin bearer token")
 	authFile := fs.String("auth", os.Getenv("PODBAY_AUTH_FILE"), "auth config JSON file (defaults to <data>/auth.json)")
 	publicURL := fs.String("public-url", os.Getenv("PODBAY_PUBLIC_URL"), "public base URL for generated site URLs")
+	cookieDomain := fs.String("cookie-domain", os.Getenv("PODBAY_COOKIE_DOMAIN"), "session cookie domain, e.g. .podbay.dev")
+	githubClientID := fs.String("github-client-id", os.Getenv("PODBAY_GITHUB_CLIENT_ID"), "GitHub OAuth client id")
+	githubClientSecret := fs.String("github-client-secret", os.Getenv("PODBAY_GITHUB_CLIENT_SECRET"), "GitHub OAuth client secret")
+	githubRedirectURL := fs.String("github-redirect-url", os.Getenv("PODBAY_GITHUB_REDIRECT_URL"), "GitHub OAuth callback URL")
 	showVersion := fs.Bool("version", false, "print version")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -57,10 +61,14 @@ func run(args []string) error {
 	}
 
 	app, err := server.New(server.Config{
-		DataDir:   *dataDir,
-		Secret:    secret,
-		AuthFile:  *authFile,
-		PublicURL: *publicURL,
+		DataDir:            *dataDir,
+		Secret:             secret,
+		AuthFile:           *authFile,
+		PublicURL:          *publicURL,
+		CookieDomain:       *cookieDomain,
+		GitHubClientID:     *githubClientID,
+		GitHubClientSecret: *githubClientSecret,
+		GitHubRedirectURL:  *githubRedirectURL,
 	})
 	if err != nil {
 		return err

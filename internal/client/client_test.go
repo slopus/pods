@@ -108,7 +108,7 @@ func TestDeploy(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	res, err := client.New(srv.URL, "s").Deploy(context.Background(), "public", "blog", strings.NewReader("fake-tarball"))
+	res, err := client.New(srv.URL, "s").Deploy(context.Background(), "blog", strings.NewReader("fake-tarball"))
 	if err != nil {
 		t.Fatalf("Deploy: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestAPIErrorDecoding(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	err := client.New(srv.URL, "s").DeleteSite(context.Background(), "public", "ghost")
+	err := client.New(srv.URL, "s").DeleteSite(context.Background(), "ghost")
 	if err == nil {
 		t.Fatal("DeleteSite: want error, got nil")
 	}
@@ -320,8 +320,8 @@ func TestSiteURL(t *testing.T) {
 	if got, want := c.SiteURL("blog"), "http://example.test:7777/sites/blog/"; got != want {
 		t.Errorf("SiteURL = %q, want %q", got, want)
 	}
-	if got, want := c.TeamSiteURL("ops", "blog"), "http://blog.ops.example.test:7777/"; got != want {
-		t.Errorf("TeamSiteURL = %q, want %q", got, want)
+	if got, want := c.SubdomainSiteURL("blog"), "http://blog.example.test:7777/"; got != want {
+		t.Errorf("SubdomainSiteURL = %q, want %q", got, want)
 	}
 	if got, want := c.Endpoint(), "http://example.test:7777"; got != want {
 		t.Errorf("Endpoint = %q, want %q", got, want)

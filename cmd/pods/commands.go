@@ -15,8 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"text/tabwriter"
-
-	"golang.org/x/term"
+	"time"
 
 	"github.com/slopus/pods/internal/api"
 	"github.com/slopus/pods/internal/client"
@@ -25,7 +24,6 @@ import (
 // podsManifest is the pods.json file at the root of a site directory.
 type podsManifest struct {
 	Name string `json:"name"`
-	Team string `json:"team,omitempty"`
 }
 
 func cmdLogin(args []string) error {
@@ -39,7 +37,6 @@ func cmdLogin(args []string) error {
 
 	ep, sec := *endpoint, *secret
 	stdin := bufio.NewReader(os.Stdin)
-	isTTY := term.IsTerminal(int(os.Stdin.Fd()))
 
 	if ep == "" {
 		fmt.Fprint(os.Stderr, "endpoint: ")
@@ -52,25 +49,11 @@ func cmdLogin(args []string) error {
 	if ep == "" {
 		return errors.New("endpoint is required")
 	}
-	if sec == "" {
-		if isTTY {
-			fmt.Fprint(os.Stderr, "token: ")
-			b, err := term.ReadPassword(int(os.Stdin.Fd()))
-			fmt.Fprintln(os.Stderr)
-			if err != nil {
-				return err
-			}
-			sec = strings.TrimSpace(string(b))
-		} else {
-			line, err := readLine(stdin)
-			if err != nil {
-				return err
-			}
-			sec = line
-		}
-	}
 
 	ep = normalizeEndpoint(ep)
+	if sec == "" {
+		return cmdGitHubLogin(ep)
+	}
 	c := client.New(ep, sec)
 	me, err := c.Me(context.Background())
 	if err != nil {
@@ -89,6 +72,64 @@ func cmdLogin(args []string) error {
 	}
 	fmt.Printf("logged in to %s as %s\n", c.Endpoint(), me.User.ID)
 	return nil
+}
+
+func cmdGitHubLogin(endpoint string) error {
+	c := client.New(endpoint, "")
+	start, err := c.GitHubDeviceStart(context.Background())
+	if err != nil {
+		return fmt.Errorf("GitHub login failed to start: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "Open %s and enter code %s\n", start.VerificationURI, start.UserCode)
+	if runtime.GOOS == "darwin" {
+		_ = exec.Command("open", start.VerificationURI).Start()
+	}
+	interval := time.Duration(start.Interval) * time.Second
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	deadline := time.Now().Add(time.Duration(start.ExpiresIn) * time.Second)
+	if start.ExpiresIn <= 0 {
+		deadline = time.Now().Add(15 * time.Minute)
+	}
+	for {
+		if time.Now().After(deadline) {
+			return errors.New("GitHub login expired")
+		}
+		time.Sleep(interval)
+		res, err := c.GitHubDevicePoll(context.Background(), start.DeviceCode)
+		if err != nil {
+			// A 401 is a definitive denial; anything else (a 5xx or a
+			// network blip) is transient — keep polling until the deadline.
+			var apiErr *client.APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode == 401 {
+				return fmt.Errorf("GitHub login failed: %w", err)
+			}
+			continue
+		}
+		if res.Pending {
+			if res.Interval > 0 {
+				interval = time.Duration(res.Interval) * time.Second
+			}
+			continue
+		}
+		if res.Token == "" || res.User == nil {
+			return errors.New("GitHub login did not return an API token")
+		}
+		path, err := configPath()
+		if err != nil {
+			return err
+		}
+		if err := saveConfigFile(path, config{Endpoint: c.Endpoint(), Secret: res.Token}); err != nil {
+			return err
+		}
+		userID := res.User.Login
+		if userID == "" {
+			userID = res.User.ID
+		}
+		fmt.Printf("logged in to %s as %s\n", c.Endpoint(), userID)
+		return nil
+	}
 }
 
 func cmdLogout(args []string) error {
@@ -182,13 +223,13 @@ const starterIndexHTML = `<!doctype html>
   </main>
 
   <!--
-    Need a database? Happy Pods ships a tiny JSON store with a zero-dependency
-    browser client. Uncomment and add an API token:
+    Need a database? Happy Pods gives every site its own JSON store with a
+    zero-dependency browser client. It is public on your site's host, so no
+    token is needed from the page. Uncomment:
 
     <script src="/pods.js"></script>
     <script type="module">
-      const pods = Pods({ token: "your-api-token" });
-      console.log(await pods.me());
+      const pods = Pods(); // same-origin, scoped to this site
       const posts = pods.db.collection("posts");
       await posts.create({ title: "hello, pods" });
       const { docs } = await posts.query({ sort: "-created_at", limit: 10 });
@@ -219,7 +260,7 @@ func cmdInit(args []string) error {
 		return err
 	}
 
-	manifest, err := json.Marshal(podsManifest{Name: filepath.Base(abs), Team: "public"})
+	manifest, err := json.Marshal(podsManifest{Name: filepath.Base(abs)})
 	if err != nil {
 		return err
 	}
@@ -253,7 +294,6 @@ func cmdInit(args []string) error {
 func cmdDeploy(args []string) error {
 	fs, endpoint, secret := newFlagSet("deploy")
 	name := fs.String("name", "", "site name (defaults to pods.json, then the directory name)")
-	team := fs.String("team", "", "team subdomain (defaults to pods.json, then public)")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
@@ -269,14 +309,10 @@ func cmdDeploy(args []string) error {
 		rest = fs.Args()
 	}
 	if len(rest) > 0 {
-		return errors.New("usage: pods deploy [dir] [--name N] [--team T]")
+		return errors.New("usage: pods deploy [dir] [--name N]")
 	}
 
 	siteName, err := resolveSiteName(*name, dir)
-	if err != nil {
-		return err
-	}
-	teamName, err := resolveTeamName(*team, dir)
 	if err != nil {
 		return err
 	}
@@ -294,14 +330,14 @@ func cmdDeploy(args []string) error {
 	if err != nil {
 		return err
 	}
-	res, err := c.Deploy(context.Background(), teamName, siteName, &buf)
+	res, err := c.Deploy(context.Background(), siteName, &buf)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("deployed %q: %d files, %s\n", res.Site.Name, res.Site.Files, humanBytes(res.Site.Bytes))
 	url := res.URL
 	if url == "" {
-		url = c.TeamSiteURL(teamName, siteName)
+		url = c.SubdomainSiteURL(siteName)
 	}
 	fmt.Println(url)
 	return nil
@@ -333,26 +369,6 @@ func resolveSiteName(flagName, dir string) (string, error) {
 	return filepath.Base(abs), nil
 }
 
-func resolveTeamName(flagTeam, dir string) (string, error) {
-	if flagTeam != "" {
-		return flagTeam, nil
-	}
-	data, err := os.ReadFile(filepath.Join(dir, "pods.json"))
-	switch {
-	case err == nil:
-		var m podsManifest
-		if err := json.Unmarshal(data, &m); err != nil {
-			return "", fmt.Errorf("parsing %s: %w", filepath.Join(dir, "pods.json"), err)
-		}
-		if m.Team != "" {
-			return m.Team, nil
-		}
-	case !errors.Is(err, os.ErrNotExist):
-		return "", err
-	}
-	return "public", nil
-}
-
 func cmdList(args []string) error {
 	fs, endpoint, secret := newFlagSet("list")
 	if err := parseFlags(fs, args); err != nil {
@@ -367,10 +383,10 @@ func cmdList(args []string) error {
 		return err
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
-	fmt.Fprintln(w, "TEAM\tNAME\tFILES\tSIZE\tUPDATED")
+	fmt.Fprintln(w, "NAME\tOWNER\tFILES\tSIZE\tUPDATED")
 	for _, s := range sites {
 		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n",
-			s.Team, s.Name, s.Files, humanBytes(s.Bytes), s.UpdatedAt.Local().Format("2006-01-02 15:04"))
+			s.Name, s.OwnerLogin, s.Files, humanBytes(s.Bytes), s.UpdatedAt.Local().Format("2006-01-02 15:04"))
 	}
 	return w.Flush()
 }
@@ -378,20 +394,25 @@ func cmdList(args []string) error {
 func cmdRm(args []string) error {
 	fs, endpoint, secret := newFlagSet("rm")
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")
-	team := fs.String("team", "", "team subdomain (defaults to pods.json, then public)")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
-		return errors.New("usage: pods rm <site> [--team T] [--yes]")
+	// Allow "pods rm <site> --yes": re-parse flags that follow the
+	// positional site argument.
+	rest := fs.Args()
+	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+		if err := parseFlags(fs, rest[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return errors.New("usage: pods rm <site> [--yes]")
+		}
+	} else if len(rest) != 1 {
+		return errors.New("usage: pods rm <site> [--yes]")
 	}
-	site := fs.Arg(0)
-	teamName, err := resolveTeamName(*team, ".")
-	if err != nil {
-		return err
-	}
+	site := rest[0]
 	if !*yes {
-		ok, err := confirm(fmt.Sprintf("delete site %q in team %q? [y/N] ", site, teamName))
+		ok, err := confirm(fmt.Sprintf("delete site %q? [y/N] ", site))
 		if err != nil {
 			return err
 		}
@@ -404,31 +425,26 @@ func cmdRm(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := c.DeleteSite(context.Background(), teamName, site); err != nil {
+	if err := c.DeleteSite(context.Background(), site); err != nil {
 		return err
 	}
-	fmt.Printf("deleted site %q.%s\n", site, teamName)
+	fmt.Printf("deleted site %q\n", site)
 	return nil
 }
 
 func cmdOpen(args []string) error {
 	fs, endpoint, secret := newFlagSet("open")
-	team := fs.String("team", "", "team subdomain (defaults to pods.json, then public)")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: pods open <site> [--team T]")
+		return errors.New("usage: pods open <site>")
 	}
 	c, err := apiClient(*endpoint, *secret)
 	if err != nil {
 		return err
 	}
-	teamName, err := resolveTeamName(*team, ".")
-	if err != nil {
-		return err
-	}
-	url := c.TeamSiteURL(teamName, fs.Arg(0))
+	url := c.SubdomainSiteURL(fs.Arg(0))
 	fmt.Println(url)
 	if runtime.GOOS == "darwin" {
 		// Best effort; the URL is already printed.

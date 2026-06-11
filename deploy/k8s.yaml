@@ -1,0 +1,141 @@
+# Happy Pods production deployment (k3s, namespace happy-pods).
+#
+# Expects two pre-created secrets in the happy-pods namespace:
+#   podbay-secret  with key PODBAY_SECRET              (bootstrap admin token)
+#   podbay-github  with keys PODBAY_GITHUB_CLIENT_ID,
+#                  PODBAY_GITHUB_CLIENT_SECRET          (GitHub OAuth app)
+#
+# Apply with: kubectl apply -f deploy/k8s.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: podbay-data
+  namespace: happy-pods
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: podbay
+  namespace: happy-pods
+  labels:
+    app.kubernetes.io/name: podbay
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # one writer for the SQLite files on the RWO volume
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: podbay
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: podbay
+    spec:
+      initContainers:
+        - name: prepare-data
+          image: busybox:1.36
+          command: ["sh", "-c", "chown -R 100:100 /data"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: podbay
+          image: docker.korshakov.com/podbay:v2
+          ports:
+            - name: http
+              containerPort: 7777
+          env:
+            - name: PODBAY_ADDR
+              value: ":7777"
+            - name: PODBAY_DATA
+              value: /data
+            - name: PODBAY_PUBLIC_URL
+              value: https://podbay.dev
+            - name: PODBAY_COOKIE_DOMAIN
+              value: .podbay.dev
+            - name: PODBAY_GITHUB_REDIRECT_URL
+              value: https://podbay.dev/api/auth/callback/github
+            - name: PODBAY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: podbay-secret
+                  key: PODBAY_SECRET
+            - name: PODBAY_GITHUB_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: podbay-github
+                  key: PODBAY_GITHUB_CLIENT_ID
+            - name: PODBAY_GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: podbay-github
+                  key: PODBAY_GITHUB_CLIENT_SECRET
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: podbay-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: podbay
+  namespace: happy-pods
+  labels:
+    app.kubernetes.io/name: podbay
+spec:
+  selector:
+    app.kubernetes.io/name: podbay
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: podbay
+  namespace: happy-pods
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: podbay.dev
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: podbay
+                port:
+                  name: http
+    - host: "*.podbay.dev"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: podbay
+                port:
+                  name: http

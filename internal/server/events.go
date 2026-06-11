@@ -27,9 +27,8 @@ func (h *eventHub) publish(ev api.UpdateEvent) {
 	if ev.At.IsZero() {
 		ev.At = time.Now().UTC()
 	}
-	eventTenant := tenantKey(ev.Team, ev.Pod)
 	for ch, tenant := range h.subscribers {
-		if tenant != "" && tenant != eventTenant {
+		if tenant != "" && tenant != ev.Pod {
 			continue
 		}
 		select {
@@ -57,7 +56,7 @@ func (h *eventHub) subscribe(tenant string) (<-chan api.UpdateEvent, func()) {
 }
 
 func (s *Server) publish(ev api.UpdateEvent) {
-	if ev.Team == "" || ev.Pod == "" {
+	if ev.Pod == "" {
 		return
 	}
 	s.events.publish(ev)
@@ -65,15 +64,10 @@ func (s *Server) publish(ev api.UpdateEvent) {
 
 // GET /api/events
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	team, site, ok := s.siteFromHost(r.Host)
+	site, ok := s.siteFromHost(r.Host)
 	tenant := ""
 	if ok {
-		if _, ok := s.requireTeamRole(w, r, team, roleReader); !ok {
-			return
-		}
-		tenant = tenantKey(team, site)
-	} else if _, ok := s.requireAdmin(w, r); !ok {
-		return
+		tenant = site
 	}
 	s.streamEvents(w, r, tenant)
 }

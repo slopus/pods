@@ -19,14 +19,14 @@ import (
 	"github.com/slopus/pods/internal/api"
 )
 
-func TestAPIRequiresAuthButHealthDoesNot(t *testing.T) {
+func TestPublicAPIAndHealth(t *testing.T) {
 	app := newTestApp(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sites", nil)
 	rr := httptest.NewRecorder()
 	app.ServeHTTP(rr, req)
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("GET /api/sites without auth = %d, want 401", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /api/sites without auth = %d, want 200", rr.Code)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -45,7 +45,7 @@ func TestDeployAndServeSite(t *testing.T) {
 		"nested/page.js": "export default 1",
 	})
 
-	req := authedRequest(http.MethodPut, "/api/teams/ops/sites/demo", bytes.NewReader(archive))
+	req := authedRequest(http.MethodPut, "/api/sites/demo", bytes.NewReader(archive))
 	req.Host = "pods.test"
 	rr := httptest.NewRecorder()
 	app.ServeHTTP(rr, req)
@@ -57,15 +57,15 @@ func TestDeployAndServeSite(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &deploy); err != nil {
 		t.Fatalf("decode deploy: %v", err)
 	}
-	if deploy.Site.Name != "demo" || deploy.Site.Team != "ops" || deploy.Site.Files != 3 {
+	if deploy.Site.Name != "demo" || deploy.Site.OwnerID != "admin" || deploy.Site.Files != 3 {
 		t.Fatalf("deploy result = %+v", deploy)
 	}
-	if deploy.URL != "http://demo.ops.pods.test/" {
+	if deploy.URL != "http://demo.pods.test/" {
 		t.Fatalf("deploy URL = %q", deploy.URL)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "demo.ops.pods.test"
+	req.Host = "demo.pods.test"
 	rr = httptest.NewRecorder()
 	app.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "Hello pod") {
@@ -87,9 +87,10 @@ func TestDeployRejectsZipSlip(t *testing.T) {
 
 func TestDBCRUDOverHTTP(t *testing.T) {
 	app := newTestApp(t)
+	deployTestSite(t, app, "demo")
 
 	req := authedRequest(http.MethodPost, "/api/db/posts", strings.NewReader(`{"status":"draft","score":2}`))
-	req.Host = "demo.public.example.test"
+	req.Host = "demo.example.test"
 	rr := httptest.NewRecorder()
 	app.ServeHTTP(rr, req)
 	if rr.Code != http.StatusCreated {
@@ -105,7 +106,7 @@ func TestDBCRUDOverHTTP(t *testing.T) {
 	}
 
 	req = authedRequest(http.MethodPatch, "/api/db/posts/"+id, strings.NewReader(`{"status":"published"}`))
-	req.Host = "demo.public.example.test"
+	req.Host = "demo.example.test"
 	rr = httptest.NewRecorder()
 	app.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -113,7 +114,7 @@ func TestDBCRUDOverHTTP(t *testing.T) {
 	}
 
 	req = authedRequest(http.MethodGet, "/api/db/posts?where=status=published&sort=-score&limit=1", nil)
-	req.Host = "demo.public.example.test"
+	req.Host = "demo.example.test"
 	rr = httptest.NewRecorder()
 	app.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -128,7 +129,7 @@ func TestDBCRUDOverHTTP(t *testing.T) {
 	}
 
 	req = authedRequest(http.MethodDelete, "/api/db/posts/"+id, nil)
-	req.Host = "demo.public.example.test"
+	req.Host = "demo.example.test"
 	rr = httptest.NewRecorder()
 	app.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -136,8 +137,21 @@ func TestDBCRUDOverHTTP(t *testing.T) {
 	}
 }
 
+func TestDBRequiresDeployedSite(t *testing.T) {
+	app := newTestApp(t)
+
+	req := authedRequest(http.MethodPost, "/api/db/posts", strings.NewReader(`{"n":1}`))
+	req.Host = "ghost.example.test"
+	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("db write on undeployed site = %d, want 404 body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestPodEventStream(t *testing.T) {
 	app := newTestApp(t)
+	deployTestSite(t, app, "demo")
 	srv := httptest.NewServer(app)
 	defer srv.Close()
 
@@ -147,8 +161,7 @@ func TestPodEventStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
-	req.Header.Set("Authorization", "Bearer secret")
-	req.Host = "demo.public.example.test"
+	req.Host = "demo.example.test"
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("event stream request: %v", err)
@@ -178,8 +191,7 @@ func TestPodEventStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRequest mutate: %v", err)
 	}
-	mutateReq.Header.Set("Authorization", "Bearer secret")
-	mutateReq.Host = "demo.public.example.test"
+	mutateReq.Host = "demo.example.test"
 	mutateResp, err := http.DefaultClient.Do(mutateReq)
 	if err != nil {
 		t.Fatalf("mutate request: %v", err)
@@ -191,7 +203,7 @@ func TestPodEventStream(t *testing.T) {
 
 	select {
 	case ev := <-eventCh:
-		if ev.Pod != "demo" || ev.Team != "public" || ev.Type != "doc.created" || ev.Collection != "posts" || ev.Doc["title"] != "streamed" {
+		if ev.Pod != "demo" || ev.Type != "doc.created" || ev.Collection != "posts" || ev.Doc["title"] != "streamed" {
 			t.Fatalf("event = %+v", ev)
 		}
 	case <-time.After(2 * time.Second):
@@ -199,35 +211,58 @@ func TestPodEventStream(t *testing.T) {
 	}
 }
 
-func TestAuthConfigMeAndTeamPermissions(t *testing.T) {
+func TestSiteOwnerControlsDeployButContentAndDBArePublic(t *testing.T) {
 	app := newTestAppWithAuth(t, `{
 	  "users": [
-	    {
-	      "id": "alice",
-	      "name": "Alice",
-	      "email": "alice@example.test",
-	      "tokens": ["alice-token"],
-	      "teams": {"ops": "publisher"}
-	    },
-	    {
-	      "id": "riley",
-	      "tokens": ["reader-token"],
-	      "teams": {"ops": "reader"}
-	    }
-	  ],
-	  "teams": {
-	    "public": {"name": "Public", "public_publish": true},
-	    "ops": {"name": "Ops"}
-	  },
-	  "apps": [
-	    {"team": "ops", "site": "private", "auth": "required"}
+	    {"id": "alice", "login": "alice", "tokens": ["alice-token"]},
+	    {"id": "riley", "login": "riley", "tokens": ["riley-token"]}
 	  ]
 	}`)
+	archive := makeTarGz(t, map[string]string{"index.html": "<h1>Private name, public content</h1>"})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
-	req.Header.Set("Authorization", "Bearer alice-token")
-	req.Host = "private.ops.example.test"
+	req := httptest.NewRequest(http.MethodPut, "/api/sites/demo", bytes.NewReader(archive))
 	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("deploy without auth status = %d, want 401", rr.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodPut, "/api/sites/demo", bytes.NewReader(archive))
+	req.Header.Set("Authorization", "Bearer alice-token")
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("deploy as owner status = %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPut, "/api/sites/demo", bytes.NewReader(archive))
+	req.Header.Set("Authorization", "Bearer riley-token")
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("deploy as non-owner status = %d, want 403 body=%s", rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "demo.example.test"
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "Private name, public content") {
+		t.Fatalf("site without auth status=%d body=%q", rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/db/views", strings.NewReader(`{"count":1}`))
+	req.Host = "demo.example.test"
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("public DB write status = %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req.Header.Set("Authorization", "Bearer alice-token")
+	req.Host = "demo.example.test"
+	rr = httptest.NewRecorder()
 	app.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("GET /api/me status = %d body=%s", rr.Code, rr.Body.String())
@@ -236,105 +271,22 @@ func TestAuthConfigMeAndTeamPermissions(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &me); err != nil {
 		t.Fatalf("decode /api/me: %v", err)
 	}
-	if !me.Authenticated || me.User == nil || me.User.ID != "alice" || me.Team != "ops" || me.Site != "private" || me.AppAuth != "required" {
+	if !me.Authenticated || me.User == nil || me.User.ID != "alice" || me.Site != "demo" {
 		t.Fatalf("me = %+v", me)
 	}
-
-	archive := makeTarGz(t, map[string]string{"index.html": "<h1>Private</h1>"})
-	req = httptest.NewRequest(http.MethodPut, "/api/teams/ops/sites/private", bytes.NewReader(archive))
-	rr = httptest.NewRecorder()
-	app.ServeHTTP(rr, req)
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("deploy without auth status = %d, want 401", rr.Code)
-	}
-
-	req = httptest.NewRequest(http.MethodPut, "/api/teams/ops/sites/private", bytes.NewReader(archive))
-	req.Header.Set("Authorization", "Bearer reader-token")
-	rr = httptest.NewRecorder()
-	app.ServeHTTP(rr, req)
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("deploy as reader status = %d, want 403 body=%s", rr.Code, rr.Body.String())
-	}
-
-	req = httptest.NewRequest(http.MethodPut, "/api/teams/ops/sites/private", bytes.NewReader(archive))
-	req.Header.Set("Authorization", "Bearer alice-token")
-	req.Host = "pods.test"
-	rr = httptest.NewRecorder()
-	app.ServeHTTP(rr, req)
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("deploy as publisher status = %d body=%s", rr.Code, rr.Body.String())
-	}
-
-	req = httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "private.ops.example.test"
-	rr = httptest.NewRecorder()
-	app.ServeHTTP(rr, req)
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("protected app without auth status = %d, want 401", rr.Code)
-	}
-
-	req = httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer alice-token")
-	req.Host = "private.ops.example.test"
-	rr = httptest.NewRecorder()
-	app.ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "Private") {
-		t.Fatalf("protected app with auth status=%d body=%q", rr.Code, rr.Body.String())
-	}
 }
 
-func TestPublicDeployCanBeDisabledInAuthConfig(t *testing.T) {
-	app := newTestAppWithAuth(t, `{
-	  "users": [
-	    {"id": "admin", "tokens": ["admin-token"], "admin": true, "teams": {"*": "admin"}}
-	  ],
-	  "teams": {
-	    "public": {"name": "Public", "public_publish": false}
-	  }
-	}`)
-	archive := makeTarGz(t, map[string]string{"index.html": "<h1>Nope</h1>"})
-
-	req := httptest.NewRequest(http.MethodPut, "/api/sites/demo", bytes.NewReader(archive))
-	rr := httptest.NewRecorder()
-	app.ServeHTTP(rr, req)
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("public deploy without auth status = %d, want 401", rr.Code)
-	}
-
-	req = httptest.NewRequest(http.MethodPut, "/api/sites/demo", bytes.NewReader(archive))
-	req.Header.Set("Authorization", "Bearer admin-token")
-	rr = httptest.NewRecorder()
-	app.ServeHTTP(rr, req)
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("public deploy with admin status = %d body=%s", rr.Code, rr.Body.String())
-	}
-}
-
-func TestOAuthSessionMapsUserByEmail(t *testing.T) {
+func TestGitHubSessionAuthenticates(t *testing.T) {
 	auth, err := buildAuthenticator(authFile{
-		Users: []authUserConfig{{
-			ID:    "alice",
-			Email: "alice@example.test",
-			Teams: map[string]string{"ops": "publisher"},
-		}},
-		Teams: map[string]authTeamFile{
-			publicTeam: {Name: "Public", PublicPublish: true},
-			"ops":      {Name: "Ops"},
-		},
 		OAuth: authOAuthFile{SessionSecret: "session-secret"},
 	}, "")
 	if err != nil {
 		t.Fatalf("buildAuthenticator: %v", err)
 	}
-	auth.oauth["google"] = &oauthProvider{
-		id:             "google",
-		allowedDomains: stringSetLower([]string{"example.test"}),
-		allowedEmails:  map[string]struct{}{},
-	}
-
 	value, err := auth.secure.Encode(sessionCookieName, oauthSession{
-		Provider: "google",
-		Subject:  "subject-1",
+		Provider: githubProviderID,
+		Subject:  "123",
+		Login:    "alice",
 		Email:    "alice@example.test",
 		Name:     "Alice",
 		Expires:  time.Now().Add(time.Hour).Unix(),
@@ -347,10 +299,218 @@ func TestOAuthSessionMapsUserByEmail(t *testing.T) {
 
 	user, ok := auth.authenticate(req)
 	if !ok {
-		t.Fatal("oauth session did not authenticate")
+		t.Fatal("GitHub session did not authenticate")
 	}
-	if user.ID != "alice" || !user.hasRole("ops", rolePublisher) {
+	if user.ID != "github:123" || user.Login != "alice" {
 		t.Fatalf("user = %+v", user)
+	}
+}
+
+func TestJWTLoginRefreshAndRevocation(t *testing.T) {
+	app := newTestApp(t)
+	user, err := app.identity.upsertUser(providerIdentity{
+		Provider: "github", Subject: "123", Login: "alice", Name: "Alice",
+	})
+	if err != nil {
+		t.Fatalf("upsertUser: %v", err)
+	}
+	token, expiresAt, err := app.auth.issueToken(user, time.Now())
+	if err != nil {
+		t.Fatalf("issueToken: %v", err)
+	}
+	if time.Until(expiresAt) < 29*24*time.Hour {
+		t.Fatalf("expiresAt = %v, want ~30 days out", expiresAt)
+	}
+
+	// The JWT authenticates as the identity user.
+	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	var me api.Me
+	if err := json.Unmarshal(rr.Body.Bytes(), &me); err != nil {
+		t.Fatalf("decode me: %v", err)
+	}
+	if !me.Authenticated || me.User == nil || me.User.ID != "github:123" || me.User.Login != "alice" {
+		t.Fatalf("me = %+v", me)
+	}
+
+	// Refresh exchanges the token for a fresh, working one.
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("refresh status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var refreshed api.TokenResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &refreshed); err != nil {
+		t.Fatalf("decode refresh: %v", err)
+	}
+	if refreshed.Token == "" || refreshed.User == nil || refreshed.User.ID != "github:123" {
+		t.Fatalf("refresh = %+v", refreshed)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req.Header.Set("Authorization", "Bearer "+refreshed.Token)
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	me = api.Me{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &me); err != nil || !me.Authenticated {
+		t.Fatalf("refreshed token rejected: err=%v me=%+v", err, me)
+	}
+
+	// Tampered tokens are rejected.
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
+	req.Header.Set("Authorization", "Bearer "+token+"x")
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("tampered refresh status = %d", rr.Code)
+	}
+
+	// Expired tokens are rejected.
+	expired, _, err := app.auth.issueToken(user, time.Now().Add(-31*24*time.Hour))
+	if err != nil {
+		t.Fatalf("issueToken expired: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
+	req.Header.Set("Authorization", "Bearer "+expired)
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expired refresh status = %d", rr.Code)
+	}
+}
+
+func TestSiteDeleteRemovesDocumentDB(t *testing.T) {
+	app := newTestApp(t)
+	deployTestSite(t, app, "demo")
+
+	req := authedRequest(http.MethodPost, "/api/db/notes", strings.NewReader(`{"v":1}`))
+	req.Host = "demo.example.test"
+	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	dbPath := filepath.Join(app.cfg.DataDir, "db", "demo.sqlite")
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("per-site db missing after write: %v", err)
+	}
+
+	req = authedRequest(http.MethodDelete, "/api/sites/demo", nil)
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("delete site status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+		t.Fatalf("per-site db still present after site delete: %v", err)
+	}
+}
+
+func TestLandingPageRenders(t *testing.T) {
+	app := newTestApp(t)
+	deployTestSite(t, app, "demo")
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("landing status = %d body=%s", rr.Code, rr.Body.String()[:min(len(rr.Body.String()), 400)])
+	}
+	body := rr.Body.String()
+	for _, want := range []string{"demo", "#docs", "github.com/slopus/pods"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("landing page missing %q", want)
+		}
+	}
+}
+
+func deployTestSite(t *testing.T, app *Server, name string) {
+	t.Helper()
+	archive := makeTarGz(t, map[string]string{"index.html": "<h1>" + name + "</h1>"})
+	req := authedRequest(http.MethodPut, "/api/sites/"+name, bytes.NewReader(archive))
+	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+		t.Fatalf("deploy %s status = %d body=%s", name, rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionCookieCannotDeployOrDelete(t *testing.T) {
+	app := newTestApp(t)
+	// A valid browser session for a GitHub user.
+	cookieVal, err := app.auth.secure.Encode(sessionCookieName, oauthSession{
+		Provider: githubProviderID, Subject: "999", Login: "mallory",
+		Expires: time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("encode session: %v", err)
+	}
+	cookie := &http.Cookie{Name: sessionCookieName, Value: cookieVal}
+
+	// The cookie identifies the user on read endpoints...
+	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	var me api.Me
+	_ = json.Unmarshal(rr.Body.Bytes(), &me)
+	if !me.Authenticated || me.User == nil || me.User.Login != "mallory" {
+		t.Fatalf("cookie did not authenticate /api/me: %+v", me)
+	}
+
+	// ...but must NOT authorize a deploy (CSRF defense: bearer-only mutations).
+	archive := makeTarGz(t, map[string]string{"index.html": "x"})
+	req = httptest.NewRequest(http.MethodPut, "/api/sites/victim", bytes.NewReader(archive))
+	req.AddCookie(cookie)
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("cookie-authorized deploy = %d, want 401 body=%s", rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/sites/victim", nil)
+	req.AddCookie(cookie)
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("cookie-authorized delete = %d, want 401", rr.Code)
+	}
+}
+
+func TestAdminRedeployPreservesOwner(t *testing.T) {
+	app := newTestAppWithAuth(t, `{
+	  "users": [
+	    {"id": "alice", "login": "alice", "tokens": ["alice-token"]},
+	    {"id": "admin", "login": "admin", "admin": true, "tokens": ["admin-token"]}
+	  ]
+	}`)
+	archive := makeTarGz(t, map[string]string{"index.html": "<h1>alice</h1>"})
+
+	deploy := func(token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, "/api/sites/blog", bytes.NewReader(archive))
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		app.ServeHTTP(rr, req)
+		return rr
+	}
+
+	if rr := deploy("alice-token"); rr.Code != http.StatusCreated {
+		t.Fatalf("alice deploy = %d body=%s", rr.Code, rr.Body.String())
+	}
+	// Admin redeploys (e.g. a hotfix); ownership must stay with alice.
+	if rr := deploy("admin-token"); rr.Code != http.StatusOK {
+		t.Fatalf("admin redeploy = %d body=%s", rr.Code, rr.Body.String())
+	}
+	owner, found, err := app.identity.siteOwner("blog")
+	if err != nil || !found || owner.ID != "alice" {
+		t.Fatalf("owner after admin redeploy = %+v found=%v err=%v", owner, found, err)
+	}
+	// Alice can still redeploy her own site.
+	if rr := deploy("alice-token"); rr.Code != http.StatusOK {
+		t.Fatalf("alice re-redeploy = %d body=%s", rr.Code, rr.Body.String())
 	}
 }
 

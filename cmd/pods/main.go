@@ -24,14 +24,14 @@ Usage:
 
 Commands:
 
-  login [--endpoint URL] [--token T]   authenticate against a podbay server
+  login [--endpoint URL] [--token T]   authenticate with GitHub device OAuth, or save an API token
   logout                               delete the saved config
   status                               show endpoint, health, sites, and endpoint collections
   init [dir]                           scaffold a starter site
-  deploy [dir] [--name N] [--team T]   package a directory as tar.gz and deploy it
+  deploy [dir] [--name N]              package a directory as tar.gz and deploy it
   list                                 list deployed sites
-  rm <site> [--team T] [--yes]         delete a site (asks for confirmation)
-  open <site> [--team T]               print the site URL (and open it on macOS)
+  rm <site> [--yes]                    delete a site (asks for confirmation)
+  open <site>                          print the site URL (and open it on macOS)
   db <coll> list [--where k=v]... [--sort f] [--limit n] [--offset n] [--json]
   db <coll> get <id>
   db <coll> create <json|->
@@ -127,7 +127,9 @@ func apiClient(flagEndpoint, flagSecret string) (*client.Client, error) {
 	if cfg.Endpoint == "" {
 		return nil, errors.New(`no endpoint configured (run "pods login" or set PODS_ENDPOINT)`)
 	}
-	return client.New(cfg.Endpoint, cfg.Secret), nil
+	c := client.New(cfg.Endpoint, cfg.Secret)
+	maybeRefreshToken(c, cfg)
+	return c, nil
 }
 
 // effectiveConfig loads the config file (if any) and applies the

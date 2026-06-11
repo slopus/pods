@@ -20,14 +20,11 @@ import (
 	"github.com/slopus/pods/internal/api"
 )
 
-const publicTeam = "public"
-
 type sitesFile struct {
 	Sites map[string]siteMeta `json:"sites"`
 }
 
 type siteMeta struct {
-	Team      string    `json:"team"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -35,19 +32,15 @@ func (s *Server) sitesDir() string {
 	return filepath.Join(s.cfg.DataDir, "sites")
 }
 
-func (s *Server) siteDir(team, name string) string {
-	return filepath.Join(s.sitesDir(), team, name)
+func (s *Server) siteDir(name string) string {
+	return filepath.Join(s.sitesDir(), name)
 }
 
 func (s *Server) sitesMetaPath() string {
 	return filepath.Join(s.cfg.DataDir, "sites.json")
 }
 
-func tenantKey(team, name string) string {
-	return team + "/" + name
-}
-
-// listSites walks the sites directory and returns api.Site entries sorted
+// listSites walks the flat sites directory and returns api.Site entries sorted
 // by name (os.ReadDir returns entries in lexical order).
 func (s *Server) listSites() ([]api.Site, error) {
 	entries, err := os.ReadDir(s.sitesDir())
@@ -62,30 +55,21 @@ func (s *Server) listSites() ([]api.Site, error) {
 		return nil, err
 	}
 	var sites []api.Site
-	for _, teamEntry := range entries {
-		if !teamEntry.IsDir() || !siteNameRe.MatchString(teamEntry.Name()) {
+	for _, entry := range entries {
+		if !entry.IsDir() || !siteNameRe.MatchString(entry.Name()) {
 			continue
 		}
-		siteEntries, err := os.ReadDir(filepath.Join(s.sitesDir(), teamEntry.Name()))
+		site, err := s.statSite(entry.Name(), meta[entry.Name()])
 		if err != nil {
 			return nil, err
 		}
-		for _, siteEntry := range siteEntries {
-			if !siteEntry.IsDir() || !siteNameRe.MatchString(siteEntry.Name()) {
-				continue
-			}
-			site, err := s.statSite(teamEntry.Name(), siteEntry.Name(), meta[tenantKey(teamEntry.Name(), siteEntry.Name())])
-			if err != nil {
-				return nil, err
-			}
-			sites = append(sites, site)
-		}
+		sites = append(sites, site)
 	}
 	return sites, nil
 }
 
-func (s *Server) statSite(team, name string, meta siteMeta) (api.Site, error) {
-	root := s.siteDir(team, name)
+func (s *Server) statSite(name string, meta siteMeta) (api.Site, error) {
+	root := s.siteDir(name)
 	info, err := os.Stat(root)
 	if err != nil {
 		return api.Site{}, err
@@ -109,15 +93,18 @@ func (s *Server) statSite(team, name string, meta siteMeta) (api.Site, error) {
 	if err != nil {
 		return api.Site{}, err
 	}
-	metaTeam := meta.Team
-	if metaTeam == "" {
-		metaTeam = team
-	}
 	updatedAt := meta.UpdatedAt
 	if updatedAt.IsZero() {
 		updatedAt = info.ModTime().UTC()
 	}
-	return api.Site{Name: name, Team: metaTeam, Files: files, Bytes: size, UpdatedAt: updatedAt.UTC()}, nil
+	site := api.Site{Name: name, Files: files, Bytes: size, UpdatedAt: updatedAt.UTC()}
+	if s.identity != nil {
+		if owner, ok, err := s.identity.siteOwner(name); err == nil && ok {
+			site.OwnerID = owner.ID
+			site.OwnerLogin = owner.Login
+		}
+	}
+	return site, nil
 }
 
 func (s *Server) loadSiteMeta() (map[string]siteMeta, error) {
@@ -166,66 +153,61 @@ func (s *Server) saveSiteMeta(meta map[string]siteMeta) error {
 	return nil
 }
 
-func (s *Server) setSiteTeam(team, name string, updatedAt time.Time) error {
+func (s *Server) setSiteMeta(name string, updatedAt time.Time) error {
+	s.metaMu.Lock()
+	defer s.metaMu.Unlock()
 	meta, err := s.loadSiteMeta()
 	if err != nil {
 		return err
 	}
-	meta[tenantKey(team, name)] = siteMeta{Team: team, UpdatedAt: updatedAt.UTC()}
+	meta[name] = siteMeta{UpdatedAt: updatedAt.UTC()}
 	return s.saveSiteMeta(meta)
 }
 
-func (s *Server) removeSiteTeam(team, name string) error {
+func (s *Server) removeSiteMeta(name string) error {
+	s.metaMu.Lock()
+	defer s.metaMu.Unlock()
 	meta, err := s.loadSiteMeta()
 	if err != nil {
 		return err
 	}
-	delete(meta, tenantKey(team, name))
+	delete(meta, name)
 	return s.saveSiteMeta(meta)
 }
 
 // GET /api/sites
 func (s *Server) handleSiteList(w http.ResponseWriter, r *http.Request) {
-	user, ok := s.requireUser(w, r)
-	if !ok {
-		return
-	}
 	sites, err := s.listSites()
 	if err != nil {
 		respondErr(w, err)
 		return
 	}
-	if !user.Admin {
-		filtered := sites[:0]
-		for _, site := range sites {
-			if site.Team == publicTeam || user.hasRole(site.Team, roleReader) {
-				filtered = append(filtered, site)
-			}
-		}
-		sites = filtered
-	}
 	writeJSON(w, http.StatusOK, api.SiteList{Sites: sites})
 }
 
-// PUT /api/sites/{name} — legacy public-team deploy.
+// PUT /api/sites/{name}
 func (s *Server) handleSiteDeploy(w http.ResponseWriter, r *http.Request) {
-	s.handleTeamSiteDeploy(w, r, publicTeam, r.PathValue("name"))
+	s.deploySite(w, r, r.PathValue("name"))
 }
 
-// PUT /api/teams/{team}/sites/{name}
-func (s *Server) handleTeamSiteDeployRoute(w http.ResponseWriter, r *http.Request) {
-	s.handleTeamSiteDeploy(w, r, r.PathValue("team"), r.PathValue("name"))
-}
-
-func (s *Server) handleTeamSiteDeploy(w http.ResponseWriter, r *http.Request, team, name string) {
-	if !validTeam(w, team) {
-		return
-	}
+func (s *Server) deploySite(w http.ResponseWriter, r *http.Request, name string) {
 	if !siteNameRe.MatchString(name) {
 		writeError(w, http.StatusBadRequest, "invalid site name %q", name)
 		return
 	}
-	if !s.requireTeamPublish(w, r, team) {
+	user, ok := s.requireSiteAccess(w, r, name)
+	if !ok {
+		return
+	}
+	unlock := s.lockSite(name)
+	defer unlock()
+
+	// A site with no current owner is a fresh claim: drop any orphan document
+	// store left behind by a previously deleted site of the same name, so the
+	// new owner never inherits stale or pre-seeded data.
+	_, owned, err := s.identity.siteOwner(name)
+	if err != nil {
+		respondErr(w, err)
 		return
 	}
 	body := http.MaxBytesReader(w, r.Body, maxSiteBytes)
@@ -243,7 +225,7 @@ func (s *Server) handleTeamSiteDeploy(w http.ResponseWriter, r *http.Request, te
 		return
 	}
 
-	final := s.siteDir(team, name)
+	final := s.siteDir(name)
 	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
 		respondErr(w, err)
 		return
@@ -264,63 +246,92 @@ func (s *Server) handleTeamSiteDeploy(w http.ResponseWriter, r *http.Request, te
 		status = http.StatusOK
 	}
 	updatedAt := info.ModTime().UTC()
-	if err := s.setSiteTeam(team, name, updatedAt); err != nil {
+	if !owned {
+		if err := s.store.DeleteSite(name); err != nil {
+			respondErr(w, err)
+			return
+		}
+	}
+	if err := s.setSiteMeta(name, updatedAt); err != nil {
 		respondErr(w, err)
 		return
 	}
-	site := api.Site{Name: name, Team: team, Files: files, Bytes: size, UpdatedAt: updatedAt}
+	if err := s.identity.claimSite(name, user, updatedAt); err != nil {
+		respondErr(w, err)
+		return
+	}
+	// Report the actual owner (an admin redeploy preserves the first owner).
+	owner := ownerFromUser(user)
+	if stored, found, err := s.identity.siteOwner(name); err == nil && found {
+		owner = stored
+	}
+	site := api.Site{Name: name, OwnerID: owner.ID, OwnerLogin: owner.Login, Files: files, Bytes: size, UpdatedAt: updatedAt}
 	s.publish(api.UpdateEvent{
 		Pod:  name,
-		Team: team,
 		Type: "site.deployed",
 		Site: &site,
 	})
 	writeJSON(w, status, api.DeployResult{
 		Site: site,
-		URL:  s.siteURL(r, team, name),
+		URL:  s.siteURL(r, name),
 	})
 }
 
-// DELETE /api/sites/{name} — legacy public-team delete.
+// DELETE /api/sites/{name}
 func (s *Server) handleSiteDelete(w http.ResponseWriter, r *http.Request) {
-	s.handleTeamSiteDelete(w, r, publicTeam, r.PathValue("name"))
+	s.deleteSite(w, r, r.PathValue("name"))
 }
 
-// DELETE /api/teams/{team}/sites/{name}
-func (s *Server) handleTeamSiteDeleteRoute(w http.ResponseWriter, r *http.Request) {
-	s.handleTeamSiteDelete(w, r, r.PathValue("team"), r.PathValue("name"))
-}
-
-func (s *Server) handleTeamSiteDelete(w http.ResponseWriter, r *http.Request, team, name string) {
-	if !validTeam(w, team) {
-		return
-	}
+func (s *Server) deleteSite(w http.ResponseWriter, r *http.Request, name string) {
 	if !siteNameRe.MatchString(name) {
 		writeError(w, http.StatusBadRequest, "invalid site name %q", name)
 		return
 	}
-	if _, ok := s.requireTeamRole(w, r, team, rolePublisher); !ok {
+	if _, ok := s.requireSiteAccess(w, r, name); !ok {
 		return
 	}
-	dir := s.siteDir(team, name)
-	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
-		writeError(w, http.StatusNotFound, "site %q/%q not found", team, name)
+	unlock := s.lockSite(name)
+	defer unlock()
+
+	dir := s.siteDir(name)
+	_, statErr := os.Stat(dir)
+	dirExists := statErr == nil
+	if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
+		respondErr(w, statErr)
 		return
-	} else if err != nil {
+	}
+	_, owned, err := s.identity.siteOwner(name)
+	if err != nil {
 		respondErr(w, err)
 		return
 	}
-	if err := os.RemoveAll(dir); err != nil {
+	if !dirExists && !owned {
+		writeError(w, http.StatusNotFound, "site %q not found", name)
+		return
+	}
+	// Tear down the store and ownership record before the static files, so a
+	// partial failure leaves the site still listed and the delete retryable
+	// (and idempotent) rather than stranding an orphan store under the name.
+	if err := s.store.DeleteSite(name); err != nil {
 		respondErr(w, err)
 		return
 	}
-	if err := s.removeSiteTeam(team, name); err != nil {
+	if err := s.identity.removeSite(name); err != nil {
 		respondErr(w, err)
 		return
+	}
+	if err := s.removeSiteMeta(name); err != nil {
+		respondErr(w, err)
+		return
+	}
+	if dirExists {
+		if err := os.RemoveAll(dir); err != nil {
+			respondErr(w, err)
+			return
+		}
 	}
 	s.publish(api.UpdateEvent{
 		Pod:  name,
-		Team: team,
 		Type: "site.deleted",
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -461,21 +472,9 @@ func (s *Server) handleSiteRedirect(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/sites/"+url.PathEscape(site)+"/", http.StatusMovedPermanently)
 }
 
-// GET /sites/{site}/{path...} — legacy public-team static serving.
+// GET /sites/{site}/{path...}
 func (s *Server) handleSiteFile(w http.ResponseWriter, r *http.Request) {
-	s.serveSitePath(w, r, publicTeam, r.PathValue("site"), r.PathValue("path"))
-}
-
-// GET /sites/{team}/{site} → 301 to /sites/{team}/{site}/
-func (s *Server) handleTeamSiteRedirect(w http.ResponseWriter, r *http.Request) {
-	team := r.PathValue("team")
-	site := r.PathValue("site")
-	http.Redirect(w, r, "/sites/"+url.PathEscape(team)+"/"+url.PathEscape(site)+"/", http.StatusMovedPermanently)
-}
-
-// GET /sites/{team}/{site}/{path...}
-func (s *Server) handleTeamSiteFile(w http.ResponseWriter, r *http.Request) {
-	s.serveSitePath(w, r, r.PathValue("team"), r.PathValue("site"), r.PathValue("path"))
+	s.serveSitePath(w, r, r.PathValue("site"), r.PathValue("path"))
 }
 
 func (s *Server) handleSubdomainSite(w http.ResponseWriter, r *http.Request) bool {
@@ -485,25 +484,22 @@ func (s *Server) handleSubdomainSite(w http.ResponseWriter, r *http.Request) boo
 	if r.URL.Path == "/pods.js" || r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/sites/") {
 		return false
 	}
-	team, site, ok := s.siteFromHost(r.Host)
+	site, ok := s.siteFromHost(r.Host)
 	if !ok {
 		return false
 	}
-	s.serveSitePath(w, r, team, site, strings.TrimPrefix(r.URL.Path, "/"))
+	s.serveSitePath(w, r, site, strings.TrimPrefix(r.URL.Path, "/"))
 	return true
 }
 
-func (s *Server) serveSitePath(w http.ResponseWriter, r *http.Request, team, site, requestPath string) {
-	if !siteNameRe.MatchString(team) || !siteNameRe.MatchString(site) {
+func (s *Server) serveSitePath(w http.ResponseWriter, r *http.Request, site, requestPath string) {
+	if !siteNameRe.MatchString(site) {
 		s.notFoundPage(w)
 		return
 	}
-	root := s.siteDir(team, site)
+	root := s.siteDir(site)
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {
 		s.notFoundPage(w)
-		return
-	}
-	if !s.requireAppAccess(w, r, team, site) {
 		return
 	}
 	rel := path.Clean("/" + requestPath)
@@ -529,47 +525,62 @@ func (s *Server) serveSitePath(w http.ResponseWriter, r *http.Request, team, sit
 	http.ServeContent(w, r, filepath.Base(full), info.ModTime(), f)
 }
 
-func (s *Server) siteFromHost(host string) (team, site string, ok bool) {
+func (s *Server) siteFromHost(host string) (site string, ok bool) {
 	host = strings.ToLower(host)
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
 	host = strings.TrimSuffix(host, ".")
 	if host == "" || host == "localhost" || net.ParseIP(host) != nil {
-		return "", "", false
+		return "", false
+	}
+	baseHost := s.publicBaseHost()
+	if baseHost != "" {
+		if host == baseHost || !strings.HasSuffix(host, "."+baseHost) {
+			return "", false
+		}
+		prefix := strings.TrimSuffix(host, "."+baseHost)
+		if strings.Contains(prefix, ".") || !siteNameRe.MatchString(prefix) {
+			return "", false
+		}
+		return prefix, true
 	}
 	labels := strings.Split(host, ".")
-	if len(labels) < 3 {
-		return "", "", false
+	if len(labels) != 3 {
+		return "", false
 	}
-	site, team = labels[0], labels[1]
+	site = labels[0]
 	if !siteNameRe.MatchString(site) {
-		return "", "", false
+		return "", false
 	}
-	if !siteNameRe.MatchString(team) {
-		return "", "", false
-	}
-	return team, site, true
+	return site, true
 }
 
-func (s *Server) siteURL(r *http.Request, team, site string) string {
+func (s *Server) siteURL(r *http.Request, site string) string {
 	base, err := url.Parse(s.baseURL(r))
 	if err != nil {
-		return s.baseURL(r) + "/sites/" + url.PathEscape(team) + "/" + url.PathEscape(site) + "/"
+		return s.baseURL(r) + "/sites/" + url.PathEscape(site) + "/"
 	}
-	base.Host = site + "." + team + "." + base.Host
+	base.Host = site + "." + base.Host
 	base.Path = "/"
 	base.RawQuery = ""
 	base.Fragment = ""
 	return base.String()
 }
 
-func validTeam(w http.ResponseWriter, value string) bool {
-	if siteNameRe.MatchString(value) {
-		return true
+func (s *Server) publicBaseHost() string {
+	if strings.TrimSpace(s.cfg.PublicURL) == "" {
+		return ""
 	}
-	writeError(w, http.StatusBadRequest, "invalid team %q", value)
-	return false
+	u, err := url.Parse(strings.TrimSpace(s.cfg.PublicURL))
+	if err != nil {
+		return ""
+	}
+	host := u.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.TrimSuffix(strings.ToLower(host), ".")
 }
 
 func (s *Server) notFoundPage(w http.ResponseWriter) {

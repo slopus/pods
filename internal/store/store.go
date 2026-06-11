@@ -1,8 +1,8 @@
-// Package store implements the podbay document store backed by SQLite.
+// Package store implements the podbay document store: one SQLite database
+// per site, plus in-memory query evaluation.
 package store
 
 import (
-	"bytes"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"time"
 
@@ -25,151 +26,209 @@ const (
 	FieldID        = "id"
 	FieldCreatedAt = "created_at"
 	FieldUpdatedAt = "updated_at"
-
-	LegacyPod = "default"
 )
 
-// fileFormat is the legacy on-disk shape of db.json.
-type fileFormat struct {
-	Pods        map[string]podData            `json:"pods"`
-	Collections map[string]map[string]api.Doc `json:"collections,omitempty"` // legacy single-tenant format
-}
+var siteNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
-type podData struct {
-	Collections map[string]map[string]api.Doc `json:"collections"`
-}
-
-// Store is a SQLite-backed document store.
+// Store manages one SQLite database per site, stored as <dir>/<site>.sqlite.
 type Store struct {
-	mu   sync.RWMutex
-	path string
-	db   *sql.DB
-	now  func() time.Time // overridable in tests
+	dir string
+	mu  sync.Mutex // guards dbs
+	dbs map[string]*siteDB
+	now func() time.Time // overridable in tests
 }
 
-// Open creates or opens a SQLite store at path. If the database is empty and a
-// sibling db.json exists, Open imports that legacy JSON store once.
-func Open(path string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+// siteDB serializes multi-statement operations (get-then-put) on one site's
+// database; the database/sql pool alone does not make those atomic.
+type siteDB struct {
+	mu sync.RWMutex
+	db *sql.DB
+}
+
+// Open prepares the per-site database directory. If a legacy single-database
+// store exists at <dir>/../db.sqlite (the pre-per-site layout), its documents
+// are split into per-site databases once and the legacy file is renamed to
+// db.sqlite.migrated.
+func Open(dir string) (*Store, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("store: create dir: %w", err)
 	}
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, fmt.Errorf("store: open sqlite: %w", err)
-	}
-	db.SetMaxOpenConns(1)
-	s := &Store{path: path, db: db, now: time.Now}
-	if err := s.init(); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if err := s.migrateLegacyJSON(filepath.Join(filepath.Dir(path), "db.json")); err != nil {
-		db.Close()
+	s := &Store{dir: dir, dbs: make(map[string]*siteDB), now: time.Now}
+	if err := s.migrateLegacyGlobal(filepath.Join(filepath.Dir(dir), "db.sqlite")); err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 
-func (s *Store) init() error {
+// Close closes all open site databases.
+func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var firstErr error
+	for site, sdb := range s.dbs {
+		if err := sdb.db.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		delete(s.dbs, site)
+	}
+	return firstErr
+}
+
+func (s *Store) sitePath(site string) string {
+	return filepath.Join(s.dir, site+".sqlite")
+}
+
+// openSite returns the cached handle for site, opening (and optionally
+// creating) its database. With create=false a site without a database file
+// yields (nil, nil), so reads on unknown sites stay empty and never create
+// files.
+func (s *Store) openSite(site string, create bool) (*siteDB, error) {
+	if !siteNameRe.MatchString(site) {
+		return nil, fmt.Errorf("store: invalid site name %q", site)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sdb, ok := s.dbs[site]; ok {
+		return sdb, nil
+	}
+	path := s.sitePath(site)
+	if !create {
+		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		} else if err != nil {
+			return nil, fmt.Errorf("store: stat %s: %w", path, err)
+		}
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, fmt.Errorf("store: open %s: %w", path, err)
+	}
+	db.SetMaxOpenConns(1)
+	if err := initSiteDB(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	sdb := &siteDB{db: db}
+	s.dbs[site] = sdb
+	return sdb, nil
+}
+
+func initSiteDB(db *sql.DB) error {
 	stmts := []string{
 		`PRAGMA busy_timeout = 5000`,
 		`PRAGMA journal_mode = WAL`,
 		`CREATE TABLE IF NOT EXISTS docs (
-			pod TEXT NOT NULL,
 			collection TEXT NOT NULL,
 			id TEXT NOT NULL,
 			doc TEXT NOT NULL,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
-			PRIMARY KEY (pod, collection, id)
+			PRIMARY KEY (collection, id)
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_docs_collection ON docs (pod, collection)`,
 	}
 	for _, stmt := range stmts {
-		if _, err := s.db.Exec(stmt); err != nil {
+		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("store: init sqlite: %w", err)
 		}
 	}
 	return nil
 }
 
-func (s *Store) migrateLegacyJSON(path string) error {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+// DeleteSite closes and removes a site's database file (with its WAL
+// sidecars). Removing a site that has no database is not an error.
+func (s *Store) DeleteSite(site string) error {
+	if !siteNameRe.MatchString(site) {
+		return fmt.Errorf("store: invalid site name %q", site)
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sdb, ok := s.dbs[site]; ok {
+		sdb.mu.Lock() // wait out in-flight operations
+		_ = sdb.db.Close()
+		sdb.mu.Unlock()
+		delete(s.dbs, site)
+	}
+	path := s.sitePath(site)
+	// Remove the WAL/SHM sidecars before the main database file: if removal is
+	// interrupted, an orphan -wal without its -shm/main file is harmless,
+	// whereas an orphan -wal left beside a future same-named db is not.
+	for _, p := range []string{path + "-wal", path + "-shm", path} {
+		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("store: remove %s: %w", p, err)
+		}
+	}
+	return nil
+}
+
+// migrateLegacyGlobal splits the old single-database layout (one db.sqlite
+// with a pod column) into per-site databases.
+func (s *Store) migrateLegacyGlobal(path string) error {
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("store: stat legacy %s: %w", path, err)
+	}
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		return fmt.Errorf("store: open legacy %s: %w", path, err)
+	}
+	defer legacy.Close()
+	// A missing docs table means there is nothing to migrate; any OTHER error
+	// (locked/corrupt/unreadable file) must fail startup rather than be
+	// mistaken for "already migrated" — silently skipping would let a later
+	// successful re-run clobber data written in the meantime.
+	var hasDocs int
+	if err := legacy.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='docs'`).Scan(&hasDocs); err != nil {
+		return fmt.Errorf("store: inspect legacy %s: %w", path, err)
+	}
+	if hasDocs == 0 {
+		legacy.Close()
+		return os.Rename(path, path+".migrated")
+	}
+	rows, err := legacy.Query(`SELECT pod, collection, id, doc, created_at, updated_at FROM docs`)
 	if err != nil {
 		return fmt.Errorf("store: read legacy %s: %w", path, err)
 	}
-	if len(bytes.TrimSpace(data)) == 0 {
-		return nil
-	}
-	var count int
-	if err := s.db.QueryRow(`SELECT count(*) FROM docs`).Scan(&count); err != nil {
-		return fmt.Errorf("store: count sqlite docs: %w", err)
-	}
-	if count > 0 {
-		return nil
-	}
-	var f fileFormat
-	if err := json.Unmarshal(data, &f); err != nil {
-		return fmt.Errorf("store: parse legacy %s: %w", path, err)
-	}
-	pods := f.Pods
-	if len(pods) == 0 && f.Collections != nil {
-		pods = map[string]podData{LegacyPod: {Collections: f.Collections}}
-	}
-	if len(pods) == 0 {
-		return nil
-	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for pod, data := range pods {
-		for coll, docs := range data.Collections {
-			for id, doc := range docs {
-				if id == "" {
-					if docID, _ := doc[FieldID].(string); docID != "" {
-						id = docID
-					}
-				}
-				if id == "" {
-					continue
-				}
-				d := normalizeDoc(doc)
-				d[FieldID] = id
-				createdAt := stringField(d, FieldCreatedAt)
-				updatedAt := stringField(d, FieldUpdatedAt)
-				if createdAt == "" {
-					createdAt = updatedAt
-				}
-				if updatedAt == "" {
-					updatedAt = createdAt
-				}
-				if createdAt == "" {
-					createdAt = time.Now().UTC().Format(time.RFC3339)
-				}
-				if updatedAt == "" {
-					updatedAt = createdAt
-				}
-				d[FieldCreatedAt] = createdAt
-				d[FieldUpdatedAt] = updatedAt
-				if err := putTx(tx, pod, coll, id, d, createdAt, updatedAt); err != nil {
-					return err
-				}
-			}
+	defer rows.Close()
+	for rows.Next() {
+		var pod, coll, id, doc, createdAt, updatedAt string
+		if err := rows.Scan(&pod, &coll, &id, &doc, &createdAt, &updatedAt); err != nil {
+			return fmt.Errorf("store: scan legacy doc: %w", err)
+		}
+		if !siteNameRe.MatchString(pod) {
+			continue
+		}
+		sdb, err := s.openSite(pod, true)
+		if err != nil {
+			return err
+		}
+		// INSERT OR IGNORE so a re-run after a partial migration never
+		// overwrites a document already updated through the API.
+		if _, err := sdb.db.Exec(`INSERT OR IGNORE INTO docs (collection, id, doc, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?)`, coll, id, doc, createdAt, updatedAt); err != nil {
+			return fmt.Errorf("store: migrate doc: %w", err)
 		}
 	}
-	return tx.Commit()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: read legacy docs: %w", err)
+	}
+	rows.Close()
+	legacy.Close()
+	if err := os.Rename(path, path+".migrated"); err != nil {
+		return fmt.Errorf("store: archive legacy db: %w", err)
+	}
+	return nil
 }
 
-// Collections returns all non-empty collections in pod sorted by name.
-func (s *Store) Collections(pod string) []api.Collection {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	rows, err := s.db.Query(`SELECT collection, count(*) FROM docs WHERE pod = ? GROUP BY collection ORDER BY collection`, pod)
+// Collections returns all non-empty collections in a site's store sorted by name.
+func (s *Store) Collections(site string) []api.Collection {
+	sdb, err := s.openSite(site, false)
+	if err != nil || sdb == nil {
+		return nil
+	}
+	sdb.mu.RLock()
+	defer sdb.mu.RUnlock()
+	rows, err := sdb.db.Query(`SELECT collection, count(*) FROM docs GROUP BY collection ORDER BY collection`)
 	if err != nil {
 		return nil
 	}
@@ -186,29 +245,37 @@ func (s *Store) Collections(pod string) []api.Collection {
 
 // Create inserts doc into coll with a freshly generated id and server-set
 // created_at/updated_at, returning the stored document.
-func (s *Store) Create(pod, coll string, doc api.Doc) (api.Doc, error) {
+func (s *Store) Create(site, coll string, doc api.Doc) (api.Doc, error) {
 	id, err := newID()
 	if err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sdb, err := s.openSite(site, true)
+	if err != nil {
+		return nil, err
+	}
+	sdb.mu.Lock()
+	defer sdb.mu.Unlock()
 	d := normalizeDoc(doc)
 	now := s.timestamp()
 	d[FieldID] = id
 	d[FieldCreatedAt] = now
 	d[FieldUpdatedAt] = now
-	if err := s.put(pod, coll, id, d, now, now); err != nil {
+	if err := put(sdb.db, coll, id, d, now, now); err != nil {
 		return nil, err
 	}
 	return copyDoc(d), nil
 }
 
 // Get returns the document with the given id, or false if absent.
-func (s *Store) Get(pod, coll, id string) (api.Doc, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	doc, ok, err := s.get(pod, coll, id)
+func (s *Store) Get(site, coll, id string) (api.Doc, bool) {
+	sdb, err := s.openSite(site, false)
+	if err != nil || sdb == nil {
+		return nil, false
+	}
+	sdb.mu.RLock()
+	defer sdb.mu.RUnlock()
+	doc, ok, err := get(sdb.db, coll, id)
 	if err != nil || !ok {
 		return nil, false
 	}
@@ -217,14 +284,18 @@ func (s *Store) Get(pod, coll, id string) (api.Doc, bool) {
 
 // Set replaces (upserts) the document with the given id. created_at is
 // preserved when the document already existed; updated_at is always reset.
-func (s *Store) Set(pod, coll, id string, doc api.Doc) (api.Doc, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Store) Set(site, coll, id string, doc api.Doc) (api.Doc, error) {
+	sdb, err := s.openSite(site, true)
+	if err != nil {
+		return nil, err
+	}
+	sdb.mu.Lock()
+	defer sdb.mu.Unlock()
 	d := normalizeDoc(doc)
 	now := s.timestamp()
 	d[FieldID] = id
 	createdAt := now
-	if prev, ok, err := s.get(pod, coll, id); err != nil {
+	if prev, ok, err := get(sdb.db, coll, id); err != nil {
 		return nil, err
 	} else if ok {
 		createdAt = stringField(prev, FieldCreatedAt)
@@ -234,7 +305,7 @@ func (s *Store) Set(pod, coll, id string, doc api.Doc) (api.Doc, error) {
 	}
 	d[FieldCreatedAt] = createdAt
 	d[FieldUpdatedAt] = now
-	if err := s.put(pod, coll, id, d, createdAt, now); err != nil {
+	if err := put(sdb.db, coll, id, d, createdAt, now); err != nil {
 		return nil, err
 	}
 	return copyDoc(d), nil
@@ -242,10 +313,17 @@ func (s *Store) Set(pod, coll, id string, doc api.Doc) (api.Doc, error) {
 
 // Patch shallow-merges patch into the existing document. Reserved fields in
 // the patch are ignored. Returns false if the document does not exist.
-func (s *Store) Patch(pod, coll, id string, patch api.Doc) (api.Doc, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	d, ok, err := s.get(pod, coll, id)
+func (s *Store) Patch(site, coll, id string, patch api.Doc) (api.Doc, bool, error) {
+	sdb, err := s.openSite(site, false)
+	if err != nil {
+		return nil, false, err
+	}
+	if sdb == nil {
+		return nil, false, nil
+	}
+	sdb.mu.Lock()
+	defer sdb.mu.Unlock()
+	d, ok, err := get(sdb.db, coll, id)
 	if err != nil || !ok {
 		return nil, ok, err
 	}
@@ -262,17 +340,21 @@ func (s *Store) Patch(pod, coll, id string, patch api.Doc) (api.Doc, bool, error
 		createdAt = updatedAt
 		d[FieldCreatedAt] = createdAt
 	}
-	if err := s.put(pod, coll, id, normalizeDoc(d), createdAt, updatedAt); err != nil {
+	if err := put(sdb.db, coll, id, normalizeDoc(d), createdAt, updatedAt); err != nil {
 		return nil, true, err
 	}
 	return copyDoc(d), true, nil
 }
 
 // Delete removes the document with the given id. Returns false if absent.
-func (s *Store) Delete(pod, coll, id string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	res, err := s.db.Exec(`DELETE FROM docs WHERE pod = ? AND collection = ? AND id = ?`, pod, coll, id)
+func (s *Store) Delete(site, coll, id string) (bool, error) {
+	sdb, err := s.openSite(site, false)
+	if err != nil || sdb == nil {
+		return false, err
+	}
+	sdb.mu.Lock()
+	defer sdb.mu.Unlock()
+	res, err := sdb.db.Exec(`DELETE FROM docs WHERE collection = ? AND id = ?`, coll, id)
 	if err != nil {
 		return false, fmt.Errorf("store: delete doc: %w", err)
 	}
@@ -281,10 +363,14 @@ func (s *Store) Delete(pod, coll, id string) (bool, error) {
 }
 
 // Drop removes a whole collection. Returns false if absent.
-func (s *Store) Drop(pod, coll string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	res, err := s.db.Exec(`DELETE FROM docs WHERE pod = ? AND collection = ?`, pod, coll)
+func (s *Store) Drop(site, coll string) (bool, error) {
+	sdb, err := s.openSite(site, false)
+	if err != nil || sdb == nil {
+		return false, err
+	}
+	sdb.mu.Lock()
+	defer sdb.mu.Unlock()
+	res, err := sdb.db.Exec(`DELETE FROM docs WHERE collection = ?`, coll)
 	if err != nil {
 		return false, fmt.Errorf("store: drop collection: %w", err)
 	}
@@ -292,10 +378,14 @@ func (s *Store) Drop(pod, coll string) (bool, error) {
 	return n > 0, nil
 }
 
-func (s *Store) collectionDocs(pod, coll string) ([]api.Doc, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	rows, err := s.db.Query(`SELECT doc FROM docs WHERE pod = ? AND collection = ?`, pod, coll)
+func (s *Store) collectionDocs(site, coll string) ([]api.Doc, error) {
+	sdb, err := s.openSite(site, false)
+	if err != nil || sdb == nil {
+		return nil, err
+	}
+	sdb.mu.RLock()
+	defer sdb.mu.RUnlock()
+	rows, err := sdb.db.Query(`SELECT doc FROM docs WHERE collection = ?`, coll)
 	if err != nil {
 		return nil, fmt.Errorf("store: query docs: %w", err)
 	}
@@ -315,9 +405,9 @@ func (s *Store) collectionDocs(pod, coll string) ([]api.Doc, error) {
 	return docs, rows.Err()
 }
 
-func (s *Store) get(pod, coll, id string) (api.Doc, bool, error) {
+func get(db *sql.DB, coll, id string) (api.Doc, bool, error) {
 	var raw string
-	err := s.db.QueryRow(`SELECT doc FROM docs WHERE pod = ? AND collection = ? AND id = ?`, pod, coll, id).Scan(&raw)
+	err := db.QueryRow(`SELECT doc FROM docs WHERE collection = ? AND id = ?`, coll, id).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -331,32 +421,19 @@ func (s *Store) get(pod, coll, id string) (api.Doc, bool, error) {
 	return doc, true, nil
 }
 
-func (s *Store) put(pod, coll, id string, doc api.Doc, createdAt, updatedAt string) error {
+func put(db *sql.DB, coll, id string, doc api.Doc, createdAt, updatedAt string) error {
 	data, err := json.Marshal(doc)
 	if err != nil {
 		return fmt.Errorf("store: marshal doc: %w", err)
 	}
-	_, err = s.db.Exec(`INSERT INTO docs (pod, collection, id, doc, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(pod, collection, id) DO UPDATE SET
+	_, err = db.Exec(`INSERT INTO docs (collection, id, doc, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(collection, id) DO UPDATE SET
 			doc = excluded.doc,
 			created_at = excluded.created_at,
-			updated_at = excluded.updated_at`, pod, coll, id, string(data), createdAt, updatedAt)
+			updated_at = excluded.updated_at`, coll, id, string(data), createdAt, updatedAt)
 	if err != nil {
 		return fmt.Errorf("store: put doc: %w", err)
-	}
-	return nil
-}
-
-func putTx(tx *sql.Tx, pod, coll, id string, doc api.Doc, createdAt, updatedAt string) error {
-	data, err := json.Marshal(doc)
-	if err != nil {
-		return fmt.Errorf("store: marshal migrated doc: %w", err)
-	}
-	_, err = tx.Exec(`INSERT INTO docs (pod, collection, id, doc, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)`, pod, coll, id, string(data), createdAt, updatedAt)
-	if err != nil {
-		return fmt.Errorf("store: migrate doc: %w", err)
 	}
 	return nil
 }

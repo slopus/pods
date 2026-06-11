@@ -1,60 +1,21 @@
 {
   "users": [
     {
-      "id": "alice",
-      "name": "Alice",
-      "email": "alice@example.com",
-      "tokens": ["replace-with-a-random-token"],
-      "oauth": ["google:replace-with-google-subject-if-email-is-not-enough"],
-      "teams": {
-        "ops": "publisher",
-        "public": "publisher"
-      }
-    },
-    {
       "id": "admin",
-      "tokens": ["replace-with-a-random-admin-token"],
+      "name": "Admin",
       "admin": true,
-      "teams": {
-        "*": "admin"
-      }
+      "tokens": ["replace-with-a-random-admin-token"]
     }
   ],
-  "teams": {
-    "public": {
-      "name": "Public",
-      "public_publish": true
-    },
-    "ops": {
-      "name": "Ops"
-    }
-  },
   "oauth": {
     "session_secret": "replace-with-a-long-random-session-secret",
-    "cookie_domain": ".some.com",
-    "session_hours": 168,
-    "providers": [
-      {
-        "id": "google",
-        "name": "Google",
-        "issuer": "https://accounts.google.com",
-        "client_id": "replace-with-oauth-client-id",
-        "client_secret": "replace-with-oauth-client-secret",
-        "redirect_url": "https://some.com/api/auth/callback/google",
-        "allowed_domains": ["example.com"]
-      }
-    ]
+    "cookie_domain": ".podbay.example.com",
+    "session_hours": 168
   },
-  "apps": [
-    {
-      "team": "ops",
-      "site": "*",
-      "auth": "required"
-    },
-    {
-      "team": "public",
-      "site": "profile",
-      "auth": "optional"
-    }
-  ]
+  "github": {
+    "client_id": "replace-or-set-PODBAY_GITHUB_CLIENT_ID",
+    "client_secret": "replace-or-set-PODBAY_GITHUB_CLIENT_SECRET",
+    "redirect_url": "https://podbay.example.com/api/auth/callback/github",
+    "allowed_users": []
+  }
 }

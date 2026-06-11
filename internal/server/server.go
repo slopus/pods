@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/slopus/pods/internal/api"
 	"github.com/slopus/pods/internal/store"
@@ -34,21 +35,48 @@ var webFS embed.FS
 
 // Config configures a Server.
 type Config struct {
-	DataDir   string // data directory (sites/ and tenant-scoped db.sqlite live here)
-	Secret    string // bootstrap admin bearer token
-	AuthFile  string // optional auth.json path; defaults to <DataDir>/auth.json
-	PublicURL string // optional base URL for printed site URLs
+	DataDir            string // data directory (sites/, db/ and identity.sqlite live here)
+	Secret             string // bootstrap admin bearer token
+	AuthFile           string // optional auth.json path; defaults to <DataDir>/auth.json
+	PublicURL          string // optional base URL for printed site URLs
+	CookieDomain       string // optional session cookie domain, e.g. ".podbay.dev"
+	GitHubClientID     string // GitHub OAuth app client id
+	GitHubClientSecret string // GitHub OAuth app client secret, required for web login
+	GitHubRedirectURL  string // optional fixed GitHub OAuth callback URL
 }
 
 // Server is the podbay HTTP handler.
 type Server struct {
-	cfg     Config
-	auth    *authenticator
-	store   *store.Store
-	events  *eventHub
-	mux     *http.ServeMux
-	landing *template.Template
-	podsJS  []byte
+	cfg      Config
+	auth     *authenticator
+	identity *identityStore
+	store    *store.Store
+	events   *eventHub
+	mux      *http.ServeMux
+	landing  *template.Template
+	podsJS   []byte
+
+	metaMu    sync.Mutex             // guards sites.json load-modify-save
+	siteMu    sync.Mutex             // guards siteLocks
+	siteLocks map[string]*sync.Mutex // per-site deploy/delete serialization
+}
+
+// lockSite serializes lifecycle operations (deploy, delete) on one site so
+// the owner check, file swap, store, and ownership record stay consistent
+// under concurrent requests. Returns the unlock function.
+func (s *Server) lockSite(name string) func() {
+	s.siteMu.Lock()
+	if s.siteLocks == nil {
+		s.siteLocks = make(map[string]*sync.Mutex)
+	}
+	m := s.siteLocks[name]
+	if m == nil {
+		m = &sync.Mutex{}
+		s.siteLocks[name] = m
+	}
+	s.siteMu.Unlock()
+	m.Lock()
+	return m.Unlock
 }
 
 // New creates the data layout, opens the document store and builds the
@@ -68,10 +96,23 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	st, err := store.Open(filepath.Join(cfg.DataDir, "db.sqlite"))
+	auth.applyGitHubConfig(authGitHubFile{
+		ClientID:     cfg.GitHubClientID,
+		ClientSecret: cfg.GitHubClientSecret,
+		RedirectURL:  cfg.GitHubRedirectURL,
+	})
+	if domain := strings.TrimSpace(cfg.CookieDomain); domain != "" {
+		auth.cookieDomain = domain
+	}
+	identity, err := openIdentityStore(filepath.Join(cfg.DataDir, "identity.sqlite"))
 	if err != nil {
 		return nil, err
 	}
+	st, err := store.Open(filepath.Join(cfg.DataDir, "db"))
+	if err != nil {
+		return nil, err
+	}
+	s := &Server{cfg: cfg, auth: auth, identity: identity, store: st, events: newEventHub()}
 	landing, err := template.ParseFS(webFS, "web/index.html")
 	if err != nil {
 		return nil, fmt.Errorf("server: parse landing page: %w", err)
@@ -80,7 +121,8 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("server: read pods.js: %w", err)
 	}
-	s := &Server{cfg: cfg, auth: auth, store: st, events: newEventHub(), landing: landing, podsJS: podsJS}
+	s.landing = landing
+	s.podsJS = podsJS
 	s.routes()
 	return s, nil
 }
@@ -102,22 +144,22 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /pods.js", s.handlePodsJS)
 	mux.HandleFunc("GET /sites/{site}", s.handleSiteRedirect)
 	mux.HandleFunc("GET /sites/{site}/{path...}", s.handleSiteFile)
-	mux.HandleFunc("GET /sites/{team}/{site}", s.handleTeamSiteRedirect)
-	mux.HandleFunc("GET /sites/{team}/{site}/{path...}", s.handleTeamSiteFile)
 
-	// API handlers authorize against auth.json, team roles, and app policies.
-	mux.HandleFunc("/api/", s.requireAuth(s.handleAPINotFound)) // JSON 404 fallback
+	// Site APIs are open and scoped by the single site subdomain. Publishing and
+	// management endpoints authorize against GitHub OAuth users and API tokens.
+	mux.HandleFunc("/api/", s.handleAPINotFound) // JSON 404 fallback
 	mux.HandleFunc("GET /api/me", s.handleMe)
 	mux.HandleFunc("GET /api/auth/providers", s.handleAuthProviders)
 	mux.HandleFunc("GET /api/auth/login/{provider}", s.handleOAuthLogin)
 	mux.HandleFunc("GET /api/auth/callback/{provider}", s.handleOAuthCallback)
+	mux.HandleFunc("POST /api/auth/github/device/start", s.handleGitHubDeviceStart)
+	mux.HandleFunc("POST /api/auth/github/device/poll", s.handleGitHubDevicePoll)
+	mux.HandleFunc("POST /api/auth/refresh", s.handleAuthRefresh)
 	mux.HandleFunc("POST /api/auth/logout", s.handleOAuthLogout)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/sites", s.handleSiteList)
 	mux.HandleFunc("PUT /api/sites/{name}", s.handleSiteDeploy)
 	mux.HandleFunc("DELETE /api/sites/{name}", s.handleSiteDelete)
-	mux.HandleFunc("PUT /api/teams/{team}/sites/{name}", s.handleTeamSiteDeployRoute)
-	mux.HandleFunc("DELETE /api/teams/{team}/sites/{name}", s.handleTeamSiteDeleteRoute)
 	mux.HandleFunc("GET /api/db", s.handleCollections)
 	mux.HandleFunc("GET /api/db/{coll}", s.handleQuery)
 	mux.HandleFunc("POST /api/db/{coll}", s.handleDocCreate)
@@ -128,15 +170,6 @@ func (s *Server) routes() {
 	mux.HandleFunc("DELETE /api/db/{coll}/{id}", s.handleDocDelete)
 
 	s.mux = mux
-}
-
-func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := s.requireUser(w, r); !ok {
-			return
-		}
-		next(w, r)
-	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
