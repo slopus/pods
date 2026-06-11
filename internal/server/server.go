@@ -43,7 +43,15 @@ type Config struct {
 	GitHubClientID     string // GitHub OAuth app client id
 	GitHubClientSecret string // GitHub OAuth app client secret, required for web login
 	GitHubRedirectURL  string // optional fixed GitHub OAuth callback URL
+
+	// Dev mode (set DevSite): single-site local server with an in-memory
+	// store, no auth, and DevRoot served live as the site's static files.
+	DevSite string // site name; when non-empty the server runs in dev mode
+	DevRoot string // local directory served live as DevSite's static files
 }
+
+// dev reports whether the server runs as a local single-site dev server.
+func (c Config) dev() bool { return c.DevSite != "" }
 
 // Server is the podbay HTTP handler.
 type Server struct {
@@ -86,12 +94,18 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Secret == "" {
 		return nil, errors.New("server: secret must not be empty")
 	}
-	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "sites"), 0o755); err != nil {
-		return nil, fmt.Errorf("server: create sites dir: %w", err)
-	}
+	// In dev mode everything is in memory and nothing touches disk except the
+	// (read-only) DevRoot being served.
 	authPath := cfg.AuthFile
-	if authPath == "" {
-		authPath = filepath.Join(cfg.DataDir, "auth.json")
+	if !cfg.dev() {
+		if err := os.MkdirAll(filepath.Join(cfg.DataDir, "sites"), 0o755); err != nil {
+			return nil, fmt.Errorf("server: create sites dir: %w", err)
+		}
+		if authPath == "" {
+			authPath = filepath.Join(cfg.DataDir, "auth.json")
+		}
+	} else {
+		authPath = "" // build an in-memory authenticator, write no auth.json
 	}
 	auth, err := newAuthenticator(authPath, cfg.Secret)
 	if err != nil {
@@ -105,11 +119,7 @@ func New(cfg Config) (*Server, error) {
 	if domain := strings.TrimSpace(cfg.CookieDomain); domain != "" {
 		auth.cookieDomain = domain
 	}
-	identity, err := openIdentityStore(filepath.Join(cfg.DataDir, "identity.sqlite"))
-	if err != nil {
-		return nil, err
-	}
-	st, err := store.Open(filepath.Join(cfg.DataDir, "db"))
+	identity, st, err := openStores(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -133,12 +143,65 @@ func New(cfg Config) (*Server, error) {
 	return s, nil
 }
 
+// NewDev builds a single-site, fully in-memory dev server that serves devRoot
+// live as devSite, with no auth and nothing written to disk. It backs the
+// `pods dev` command.
+func NewDev(devSite, devRoot string) (*Server, error) {
+	secret, err := randomString(24) // ephemeral; never printed
+	if err != nil {
+		return nil, err
+	}
+	return New(Config{Secret: secret, DevSite: devSite, DevRoot: devRoot})
+}
+
+// openStores opens the identity and document stores: in memory for the dev
+// server, on disk otherwise.
+func openStores(cfg Config) (*identityStore, *store.Store, error) {
+	if cfg.dev() {
+		identity, err := openIdentityStoreMemory()
+		if err != nil {
+			return nil, nil, err
+		}
+		return identity, store.OpenMemory(), nil
+	}
+	identity, err := openIdentityStore(filepath.Join(cfg.DataDir, "identity.sqlite"))
+	if err != nil {
+		return nil, nil, err
+	}
+	st, err := store.Open(filepath.Join(cfg.DataDir, "db"))
+	if err != nil {
+		identity.db.Close()
+		return nil, nil, err
+	}
+	return identity, st, nil
+}
+
 // ServeHTTP implements http.Handler.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if s.handleSubdomainSite(w, r) {
+	if s.cfg.dev() {
+		if s.handleDevStatic(w, r) {
+			return
+		}
+	} else if s.handleSubdomainSite(w, r) {
 		return
 	}
 	s.mux.ServeHTTP(w, r)
+}
+
+// handleDevStatic serves the live DevRoot directory for ordinary GET/HEAD
+// requests, leaving API and built-in asset routes to the mux. It is the dev
+// equivalent of subdomain site serving.
+func (s *Server) handleDevStatic(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	p := r.URL.Path
+	if p == "/pods.js" || p == "/install.sh" || p == "/healthz" || p == "/favicon.ico" ||
+		strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/sites/") {
+		return false
+	}
+	s.serveDevFile(w, r, strings.TrimPrefix(p, "/"))
+	return true
 }
 
 func (s *Server) routes() {

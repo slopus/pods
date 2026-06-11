@@ -59,6 +59,31 @@ pods open hello                            # 4. https://hello.podbay.dev
 `pods login` targets `https://podbay.dev` by default; pass `--endpoint` only for a
 self-hosted server.
 
+### Develop locally (`pods dev`)
+
+Iterate without deploying. `pods dev` serves your folder live and runs the **same**
+`/api/db` JSON store API and `/pods.js` client as production, backed by an in-memory
+SQLite database — no login, no deploy, and nothing written to disk:
+
+```sh
+pods dev ./hello              # http://localhost:7777 — edit files, refresh, done
+pods dev ./hello --addr :8080 --open
+```
+
+Pages use the store exactly as they will in production:
+
+```html
+<script src="/pods.js"></script>
+<script type="module">
+  const pods = Pods();                       // same-origin
+  const todos = pods.db.collection("todos");
+  await todos.create({ task: "ship it" });
+  console.log(await todos.query({ sort: "-created_at" }));
+</script>
+```
+
+The in-memory store resets every time you restart the server.
+
 ### Self-host with Docker
 
 ```sh
@@ -87,6 +112,7 @@ alias `--secret`) → env `PODS_ENDPOINT`/`PODS_TOKEN`/`PODS_SECRET` (`PODS_TOKE
 | `pods logout` | Delete the saved config file. |
 | `pods status` | Show endpoint, health check result, current user, site count, and collections if the endpoint is a site subdomain. |
 | `pods init [dir]` | Scaffold a starter site (`pods.json` + a friendly `index.html`). Refuses to overwrite existing files. |
+| `pods dev [dir] [--addr :7777] [--name N] [--open]` | Run a local dev server: serves the folder live and provides the same `/api/db` JSON store (backed by in-memory SQLite) and `/pods.js` client as production — no login, no deploy, nothing written to disk. |
 | `pods deploy [dir] [--name N]` | Tar.gz the folder and deploy. Name: flag > `pods.json` > dir basename. Prints the subdomain URL. |
 | `pods list` | Table of sites: NAME, OWNER, FILES, SIZE, UPDATED. |
 | `pods rm <site> [--yes]` | Delete a site (confirms unless `--yes`). |

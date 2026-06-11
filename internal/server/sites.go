@@ -497,7 +497,17 @@ func (s *Server) serveSitePath(w http.ResponseWriter, r *http.Request, site, req
 		s.notFoundPage(w)
 		return
 	}
-	root := s.siteDir(site)
+	s.serveStaticRoot(w, r, s.siteDir(site), requestPath)
+}
+
+// serveDevFile serves a file from the dev server's live DevRoot directory.
+func (s *Server) serveDevFile(w http.ResponseWriter, r *http.Request, requestPath string) {
+	s.serveStaticRoot(w, r, s.cfg.DevRoot, requestPath)
+}
+
+// serveStaticRoot serves requestPath out of root, falling back to index.html
+// for directories and rendering the 404 page when nothing matches.
+func (s *Server) serveStaticRoot(w http.ResponseWriter, r *http.Request, root, requestPath string) {
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {
 		s.notFoundPage(w)
 		return

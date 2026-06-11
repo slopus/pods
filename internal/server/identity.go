@@ -40,11 +40,23 @@ func openIdentityStore(path string) (*identityStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("identity: create dir: %w", err)
 	}
-	db, err := sql.Open("sqlite", path)
+	return newIdentityStore(path)
+}
+
+// openIdentityStoreMemory keeps the identity database entirely in memory, for
+// the local dev server.
+func openIdentityStoreMemory() (*identityStore, error) {
+	return newIdentityStore(":memory:")
+}
+
+func newIdentityStore(dsn string) (*identityStore, error) {
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("identity: open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
+	db.SetConnMaxIdleTime(0)
+	db.SetConnMaxLifetime(0)
 	s := &identityStore{db: db, now: time.Now}
 	if err := s.init(); err != nil {
 		db.Close()

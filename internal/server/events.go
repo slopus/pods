@@ -64,9 +64,10 @@ func (s *Server) publish(ev api.UpdateEvent) {
 
 // GET /api/events
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	site, ok := s.siteFromHost(r.Host)
 	tenant := ""
-	if ok {
+	if s.cfg.dev() {
+		tenant = s.cfg.DevSite
+	} else if site, ok := s.siteFromHost(r.Host); ok {
 		tenant = site
 	}
 	s.streamEvents(w, r, tenant)

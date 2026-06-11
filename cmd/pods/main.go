@@ -28,6 +28,7 @@ Commands:
   logout                               delete the saved config
   status                               show endpoint, health, sites, and endpoint collections
   init [dir]                           scaffold a starter site
+  dev [dir] [--addr :7777] [--name N]  run a local dev server (live files + in-memory JSON store API)
   deploy [dir] [--name N]              package a directory as tar.gz and deploy it
   list                                 list deployed sites
   rm <site> [--yes]                    delete a site (asks for confirmation)
@@ -70,6 +71,8 @@ func run(args []string) error {
 		return cmdStatus(rest)
 	case "init":
 		return cmdInit(rest)
+	case "dev":
+		return cmdDev(rest)
 	case "deploy":
 		return cmdDeploy(rest)
 	case "list":

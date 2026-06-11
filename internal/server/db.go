@@ -209,6 +209,11 @@ func (s *Server) validDocPath(w http.ResponseWriter, r *http.Request) (site, col
 // and requires that site to actually be deployed, so stray subdomains can
 // never create database files.
 func (s *Server) requestSite(w http.ResponseWriter, r *http.Request) (site string, ok bool) {
+	// The dev server is single-site: the store API is always the dev site,
+	// regardless of host (so it works on localhost without a subdomain).
+	if s.cfg.dev() {
+		return s.cfg.DevSite, true
+	}
 	site, ok = s.siteFromHost(r.Host)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "site API requires a <site> subdomain host")

@@ -143,6 +143,44 @@ func TestStorePerSiteFilesAndDelete(t *testing.T) {
 	}
 }
 
+func TestMemoryStore(t *testing.T) {
+	s := OpenMemory()
+	defer s.Close()
+
+	// Reads on an unwritten site stay empty without creating anything.
+	if _, ok := s.Get("dev", "todos", "x"); ok {
+		t.Fatal("Get on empty memory store returned a doc")
+	}
+	if colls := s.Collections("dev"); len(colls) != 0 {
+		t.Fatalf("Collections on empty memory store = %+v", colls)
+	}
+
+	created, err := s.Create("dev", "todos", api.Doc{"task": "ship"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	id, _ := created[FieldID].(string)
+	if id == "" {
+		t.Fatalf("created doc missing id: %+v", created)
+	}
+	got, ok := s.Get("dev", "todos", id)
+	if !ok || got["task"] != "ship" {
+		t.Fatalf("Get after Create = %+v ok=%v", got, ok)
+	}
+	res := s.Query("dev", "todos", Query{})
+	if res.Total != 1 {
+		t.Fatalf("query total = %d, want 1", res.Total)
+	}
+
+	// DeleteSite drops the in-memory data with no files involved.
+	if err := s.DeleteSite("dev"); err != nil {
+		t.Fatalf("DeleteSite: %v", err)
+	}
+	if _, ok := s.Get("dev", "todos", id); ok {
+		t.Fatal("doc survived DeleteSite on memory store")
+	}
+}
+
 func TestStoreMigratesLegacyGlobalDB(t *testing.T) {
 	dataDir := t.TempDir()
 	legacyPath := filepath.Join(dataDir, "db.sqlite")

@@ -46,7 +46,7 @@ spec:
               mountPath: /data
       containers:
         - name: podbay
-          image: docker.korshakov.com/podbay:v4
+          image: docker.korshakov.com/podbay:v5
           ports:
             - name: http
               containerPort: 7777

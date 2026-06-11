@@ -60,6 +60,21 @@ Sanity-check connectivity and identity at any time:
 pods status    # endpoint, health, user (or "anonymous"), site count
 ```
 
+## Develop locally (no login, no deploy)
+
+`pods dev [dir]` runs a local server that serves the directory live and exposes the same
+`/api/db` JSON store and `/pods.js` client as production, backed by in-memory SQLite. No
+authentication, no network, nothing written to disk; the store resets on exit. Use it to
+build or test a site before deploying.
+
+```sh
+pods dev ./site --addr :7777      # serves http://localhost:7777 with /api/db + /pods.js
+```
+
+It blocks until interrupted, so run it in the background when scripting
+(`pods dev ./site --addr :7777 &`), then talk to `http://localhost:7777/api/db/...`
+directly — no token and no subdomain host needed.
+
 ## Deploy a folder
 
 ```sh

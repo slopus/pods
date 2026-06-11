@@ -30,9 +30,11 @@ const (
 
 var siteNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
-// Store manages one SQLite database per site, stored as <dir>/<site>.sqlite.
+// Store manages one SQLite database per site, stored as <dir>/<site>.sqlite,
+// or entirely in memory when mem is set (used by the local dev server).
 type Store struct {
 	dir string
+	mem bool
 	mu  sync.Mutex // guards dbs
 	dbs map[string]*siteDB
 	now func() time.Time // overridable in tests
@@ -58,6 +60,12 @@ func Open(dir string) (*Store, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// OpenMemory returns a store whose per-site databases live entirely in memory
+// and disappear on Close. Nothing is written to disk. It backs `pods dev`.
+func OpenMemory() *Store {
+	return &Store{mem: true, dbs: make(map[string]*siteDB), now: time.Now}
 }
 
 // Close closes all open site databases.
@@ -91,20 +99,32 @@ func (s *Store) openSite(site string, create bool) (*siteDB, error) {
 	if sdb, ok := s.dbs[site]; ok {
 		return sdb, nil
 	}
-	path := s.sitePath(site)
-	if !create {
-		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
-		} else if err != nil {
-			return nil, fmt.Errorf("store: stat %s: %w", path, err)
+	// In-memory sites exist only once written to, so an uncached site with
+	// create=false is simply empty.
+	dsn := ":memory:"
+	if !s.mem {
+		path := s.sitePath(site)
+		if !create {
+			if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+				return nil, nil
+			} else if err != nil {
+				return nil, fmt.Errorf("store: stat %s: %w", path, err)
+			}
 		}
+		dsn = path
+	} else if !create {
+		return nil, nil
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("store: open %s: %w", path, err)
+		return nil, fmt.Errorf("store: open %s: %w", dsn, err)
 	}
 	db.SetMaxOpenConns(1)
-	if err := initSiteDB(db); err != nil {
+	// Keep the single connection alive so an in-memory database is not lost
+	// when database/sql reaps an idle connection.
+	db.SetConnMaxIdleTime(0)
+	db.SetConnMaxLifetime(0)
+	if err := initSiteDB(db, s.mem); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -113,10 +133,13 @@ func (s *Store) openSite(site string, create bool) (*siteDB, error) {
 	return sdb, nil
 }
 
-func initSiteDB(db *sql.DB) error {
-	stmts := []string{
-		`PRAGMA busy_timeout = 5000`,
-		`PRAGMA journal_mode = WAL`,
+func initSiteDB(db *sql.DB, mem bool) error {
+	stmts := []string{`PRAGMA busy_timeout = 5000`}
+	if !mem {
+		// WAL needs a real file; an in-memory database stays in its default journal mode.
+		stmts = append(stmts, `PRAGMA journal_mode = WAL`)
+	}
+	stmts = append(stmts,
 		`CREATE TABLE IF NOT EXISTS docs (
 			collection TEXT NOT NULL,
 			id TEXT NOT NULL,
@@ -125,7 +148,7 @@ func initSiteDB(db *sql.DB) error {
 			updated_at TEXT NOT NULL,
 			PRIMARY KEY (collection, id)
 		)`,
-	}
+	)
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("store: init sqlite: %w", err)
@@ -147,6 +170,9 @@ func (s *Store) DeleteSite(site string) error {
 		_ = sdb.db.Close()
 		sdb.mu.Unlock()
 		delete(s.dbs, site)
+	}
+	if s.mem {
+		return nil
 	}
 	path := s.sitePath(site)
 	// Remove the WAL/SHM sidecars before the main database file: if removal is

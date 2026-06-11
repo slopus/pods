@@ -514,6 +514,61 @@ func TestAdminRedeployPreservesOwner(t *testing.T) {
 	}
 }
 
+func TestDevServerServesFilesAndInMemoryStore(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<h1>dev home</h1>"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	app, err := NewDev("devsite", root)
+	if err != nil {
+		t.Fatalf("NewDev: %v", err)
+	}
+
+	// Static files are served live from DevRoot at the apex (localhost), with
+	// no subdomain.
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "localhost:7777"
+	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "dev home") {
+		t.Fatalf("dev static / = %d body=%q", rr.Code, rr.Body.String())
+	}
+
+	// The JSON store API works on the plain host with no auth and no subdomain.
+	req = httptest.NewRequest(http.MethodPost, "/api/db/todos", strings.NewReader(`{"task":"ship"}`))
+	req.Host = "localhost:7777"
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("dev db create = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var doc api.Doc
+	_ = json.Unmarshal(rr.Body.Bytes(), &doc)
+	id, _ := doc["id"].(string)
+	if id == "" || doc["task"] != "ship" {
+		t.Fatalf("dev created doc = %+v", doc)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/db/todos", nil)
+	req.Host = "localhost:7777"
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	var q api.QueryResult
+	_ = json.Unmarshal(rr.Body.Bytes(), &q)
+	if q.Total != 1 || q.Docs[0]["id"] != id {
+		t.Fatalf("dev query = %+v", q)
+	}
+
+	// /pods.js is still served by the server (not from DevRoot).
+	req = httptest.NewRequest(http.MethodGet, "/pods.js", nil)
+	req.Host = "localhost:7777"
+	rr = httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Header().Get("Content-Type"), "javascript") {
+		t.Fatalf("dev /pods.js = %d type=%q", rr.Code, rr.Header().Get("Content-Type"))
+	}
+}
+
 func newTestApp(t *testing.T) *Server {
 	t.Helper()
 	app, err := New(Config{DataDir: t.TempDir(), Secret: "secret"})
